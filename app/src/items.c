@@ -220,15 +220,15 @@ static items_error_t items_storeAllTransfers() {
                 switch (parser_getTxName(token_index)) {
                     case parser_name_tx_transfer:
                         *curr_token_idx = token_index;
-                        items_storeTxItem(token_index, &num_of_transfers);
+                        CHECK_ITEMS_ERROR(items_storeTxItem(token_index, &num_of_transfers));
                         break;
                     case parser_name_tx_transfer_xchain:
                         *curr_token_idx = token_index;
-                        items_storeTxCrossItem(token_index, &num_of_transfers);
+                        CHECK_ITEMS_ERROR(items_storeTxCrossItem(token_index, &num_of_transfers));
                         break;
                     case parser_name_rotate:
                         *curr_token_idx = token_index;
-                        items_storeTxRotateItem(token_index);
+                        CHECK_ITEMS_ERROR(items_storeTxRotateItem(token_index));
                         break;
                     case parser_name_gas:
                         break;
@@ -236,10 +236,12 @@ static items_error_t items_storeAllTransfers() {
                         *curr_token_idx = token_index;
                         PARSER_TO_ITEMS_ERROR(object_get_value(json_all, token_index, JSON_ARGS, &token_index));
                         PARSER_TO_ITEMS_ERROR(array_get_element_count(json_all, token_index, &args_element_count));
-                        items_storeUnknownItem(args_element_count, token_index);
+                        CHECK_ITEMS_ERROR(items_storeUnknownItem(args_element_count, token_index));
                         break;
                 }
             }
+            // numOfItems is < MAX here: any store that reached MAX returned
+            // items_too_many_items above, so this index is always in bounds.
             curr_token_idx = &item_array.items[item_array.numOfItems].json_token_index;
         }
     } else {
