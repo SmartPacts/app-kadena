@@ -1,0 +1,15 @@
+name: Build
+# Manual-only on this fork: duplicates reusable_build.yml (LedgerHQ CI) and its
+# pnpm11 setup cannot prepare @zondax/hw-app-kda's git-hosted dependency
+# (ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED). Zemu runs locally via yarn.
+on:
+  workflow_dispatch:
+
+jobs:
+  ledger-build:
+    uses: Zondax/_workflows/.github/workflows/_ledger_main.yml@v3
+    with:
+      runs-on: ${{ github.repository_owner == 'zondax' && 'zondax-runners' || 'ubuntu-latest' }}
+      has-rust: false
+      has-nanos: false
+      node-version: '22'

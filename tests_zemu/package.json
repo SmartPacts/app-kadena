@@ -1,0 +1,51 @@
+{
+  "name": "integration-tests",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [
+    "Zondax",
+    "Ledger"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zondax/ledger-kadena"
+  },
+  "license": "Apache-2.0",
+  "author": "Zondax AG",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "clean": "ts-node tests/pullImageKillOld.ts",
+    "format": "FORCE_COLOR=1 prettier --write . && sort-package-json",
+    "format:check": "FORCE_COLOR=1 prettier --check .",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .",
+    "test": "yarn clean && jest --maxConcurrency 2",
+    "try": "node try.mjs",
+    "try_legacy": "node try_legacy.mjs",
+    "upgrade": "bunx npm-check-updates -i"
+  },
+  "dependencies": {
+    "@zondax/ledger-kadena": "^0.0.4",
+    "@zondax/zemu": "^0.67.4",
+    "hw-app-kda": "^0.0.0"
+  },
+  "devDependencies": {
+    "@ledgerhq/hw-transport-node-hid": "^6.29.13",
+    "@noble/curves": "^2.0.1",
+    "@types/jest": "^30.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
+    "@zondax/hw-app-kda": "^0.1.1",
+    "blakejs": "^1.2.1",
+    "ed25519-supercop": "^2.0.1",
+    "eslint": "^9.37.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jest": "^29.0.1",
+    "jest": "30.2.0",
+    "prettier": "^3.6.2",
+    "sort-package-json": "^3.4.0",
+    "ts-jest": "^29.4.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
