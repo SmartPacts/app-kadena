@@ -24,13 +24,20 @@
 #include "parser.h"
 #include "zxmacros.h"
 
-#define TEMPLATE_JSON_BUFFER_SIZE 1024
+// Must hold the largest transfer template parser_formatTxTransfer can assemble. The
+// worst case is a cross-chain transfer with every field at its parser_validate_chunks
+// cap (recipient 64, namespace 63, module 32, network 20, amount 32, nonce 32, gas
+// 20/10, the 64-hex device address repeated) = 1191 bytes + NUL. 1280 leaves margin;
+// the total storage_t stays 16384 (raw buffer shrinks to 15104, still ample). The
+// buffer is registered with its real size in tx_json_initialize and every append is
+// checked in parser_formatTxTransfer, so an over-cap template fails closed.
+#define TEMPLATE_JSON_BUFFER_SIZE 1280
 #if !defined(TARGET_NANOS)
 #define RAM_BUFFER_SIZE 8192
-#define FLASH_BUFFER_SIZE 16384 - TEMPLATE_JSON_BUFFER_SIZE
+#define FLASH_BUFFER_SIZE (16384 - TEMPLATE_JSON_BUFFER_SIZE)
 #else
 #define RAM_BUFFER_SIZE 256
-#define FLASH_BUFFER_SIZE 8192 - TEMPLATE_JSON_BUFFER_SIZE
+#define FLASH_BUFFER_SIZE (8192 - TEMPLATE_JSON_BUFFER_SIZE)
 #endif
 
 // Ram
@@ -58,7 +65,13 @@ void set_tx_type(tx_type_t type) { tx_type = type; }
 
 tx_type_t get_tx_type() { return tx_type; }
 
-void tx_json_initialize() { buffering_json_init((uint8_t *)N_appdata.templete_json, FLASH_BUFFER_SIZE); }
+void tx_json_initialize() {
+    // Register the template buffer with its ACTUAL size. templete_json is
+    // TEMPLATE_JSON_BUFFER_SIZE (1280) bytes and is the last member of storage_t;
+    // registering it as FLASH_BUFFER_SIZE (15104) let buffering_json_append write far
+    // past it into adjacent NVRAM. Mirror the raw-buffer call below (sizeof).
+    buffering_json_init((uint8_t *)N_appdata.templete_json, sizeof(N_appdata.templete_json));
+}
 
 void tx_json_reset() { buffering_json_reset(); }
 

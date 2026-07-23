@@ -361,6 +361,58 @@ describe.each(APDU_TEST_CASES)('APDU tests ', function (data) {
   })
 })
 
+// F15 HIGH-A regression: the legacy HD-path guard [2, HDPATH_LEN_DEFAULT]. A host-controlled
+// hdPathQty must NEVER drive the MEMCPY past the fixed 20-byte hdPath global (qty > 5) and must cover
+// the two components the mainnet check reads (qty >= 2). @zondax/hw-app-kda cannot encode an
+// out-of-range path, so these send RAW BCOMP_GET_PUBKEY (0x02) APDUs via the transport and assert the
+// status word directly. Layout: CLA(00) INS(02) P1(00) P2(00) Lc | hdPathQty | hdPathQty*4 path bytes.
+const COMP_LE = [0x8000002c, 0x80000272, 0x80000000, 0x00000000, 0x00000000] // m/44'/626'/0'/0/0
+function u32le(n: number): Buffer {
+  const b = Buffer.alloc(4)
+  b.writeUInt32LE(n >>> 0, 0)
+  return b
+}
+function getPubkeyApdu(qty: number, comps: number[]): Buffer {
+  const path = Buffer.concat(comps.map(u32le))
+  const lc = 1 + path.length
+  return Buffer.concat([Buffer.from([0x00, 0x02, 0x00, 0x00, lc & 0xff, qty & 0xff]), path])
+}
+// The Zemu transport THROWS on a non-0x9000 status word (TransportStatusError.statusCode), so
+// normalize both outcomes to the 4-hex status string.
+async function sw(sim: Zemu, apdu: Buffer): Promise<string> {
+  try {
+    const resp = await sim.getTransport().exchange(apdu)
+    return resp.subarray(-2).toString('hex')
+  } catch (e: any) {
+    if (typeof e?.statusCode === 'number') return e.statusCode.toString(16).padStart(4, '0')
+    throw e
+  }
+}
+
+const HDPATH_GUARD_CASES = [
+  { name: 'overflow qty=63 rejected', qty: 63, comps: Array.from({ length: 63 }, (_, i) => COMP_LE[i % 5]), want: '6984' },
+  { name: 'overflow qty=6 rejected', qty: 6, comps: Array.from({ length: 6 }, (_, i) => COMP_LE[i % 5]), want: '6984' },
+  { name: 'under-min qty=1 rejected', qty: 1, comps: [COMP_LE[0]], want: '6984' },
+  { name: 'valid qty=5 accepted', qty: 5, comps: COMP_LE, want: '9000' },
+  { name: 'valid qty=2 (m/44/626) accepted', qty: 2, comps: [COMP_LE[0], COMP_LE[1]], want: '9000' },
+]
+
+describe.each(HDPATH_GUARD_CASES)('Legacy HD-path guard', function (data) {
+  test.concurrent.each(models)(`${data.name}`, async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const got = await sw(sim, getPubkeyApdu(data.qty, data.comps))
+      expect(got).toEqual(data.want)
+      // The app must survive an overflow attempt: GET_VERSION (0x00 0x20) still answers 0x9000.
+      const alive = await sw(sim, Buffer.from([0x00, 0x20, 0x00, 0x00, 0x00]))
+      expect(alive).toEqual('9000')
+    } finally {
+      await sim.close()
+    }
+  })
+})
+
 function decodeHash(encodedHash: string) {
   let base64Hash = encodedHash.replace(/-/g, '+').replace(/_/g, '/')
 

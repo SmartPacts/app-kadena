@@ -83,18 +83,42 @@ void legacy_app_reply_address() {
 }
 
 void legacy_extractHDPath(uint8_t *buffer, uint32_t rx, uint32_t offset, uint8_t check_len) {
-    if (rx < offset) {
+    // Need at least the qty byte at buffer[offset], so rx must be strictly past offset
+    // (rx == offset would read one stale byte before the qty guard).
+    if (rx <= offset) {
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
     uint8_t hdPathQty = buffer[offset];
+
+    // The legacy protocol accepts a VARIABLE-length path (e.g. m/44'/626' with 2
+    // components, or the full 5), so we cannot pin hdPathQty to a single value. But a
+    // host-controlled hdPathQty must never drive the MEMCPY past sizeof(hdPath)
+    // (HDPATH_LEN_DEFAULT components); it must also cover at least the two components the
+    // mainnet check below reads. Bound it to [2, HDPATH_LEN_DEFAULT] BEFORE the copy
+    // (fail closed) regardless of check_len — check_len==0 callers otherwise validate nothing.
+    if (hdPathQty < 2 || hdPathQty > HDPATH_LEN_DEFAULT) {
+        THROW(APDU_CODE_DATA_INVALID);
+    }
+
     uint8_t hdPathLen = hdPathQty * sizeof(uint32_t);
     uint32_t offset_hdpath_data = offset + 1;
 
+    // Always require the host to have actually sent the hdPath bytes — even on the
+    // check_len==0 (transfer-init) path, which otherwise read stale APDU-buffer RAM
+    // when the APDU was short. check_len==1 additionally requires an EXACT length.
+    if (offset_hdpath_data + hdPathLen > rx) {
+        THROW(APDU_CODE_WRONG_LENGTH);
+    }
     if ((check_len == 1) && (rx - offset_hdpath_data != hdPathLen)) {
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
+    // Zero the whole global before a variable-length copy: derivation always uses the
+    // fixed HDPATH_LEN_DEFAULT length, so for a short path (qty < 5) the uncopied tail
+    // components must be a deterministic 0 — not stale bytes left by a prior APDU (which
+    // would make the derived key/address depend on session history).
+    MEMZERO(hdPath, sizeof(uint32_t) * HDPATH_LEN_DEFAULT);
     MEMCPY(hdPath, buffer + offset_hdpath_data, hdPathLen);
 
     const bool mainnet = hdPath[0] == HDPATH_0_DEFAULT && hdPath[1] == HDPATH_1_DEFAULT;
@@ -113,6 +137,10 @@ bool legacy_check_end_of_chunk() {
     if (payload_length < tx_buffer_length) {
         uint8_t *tx_buffer = tx_get_buffer();
         uint8_t hdPathQty = tx_buffer[payload_length];
+        // Mirror legacy_extractHDPath: a variable-length path in [2, HDPATH_LEN_DEFAULT].
+        if (hdPathQty < 2 || hdPathQty > HDPATH_LEN_DEFAULT) {
+            return false;
+        }
         uint8_t hdPathLen = hdPathQty * sizeof(uint32_t);
         if ((payload_length + hdPathLen + LEGACY_HDPATH_LEN_BYTES) == tx_buffer_length) {
             return true;
@@ -197,14 +225,30 @@ bool legacy_process_chunk(__Z_UNUSED volatile uint32_t *tx, uint32_t rx, bool ha
     return false;
 }
 
-static uint32_t legacy_initialize_transfer() {
-    legacy_extractHDPath(G_io_apdu_buffer, LEGACY_OFFSET_HDPATH_SIZE + 1, LEGACY_OFFSET_HDPATH_SIZE, 0);
+static uint32_t legacy_initialize_transfer(uint32_t rx) {
+    // Fresh start: hard-reset the shared chunk-reassembly statics so an aborted prior
+    // legacy command (which may have left them non-zero) cannot be mistaken for a
+    // continuation of this transfer.
+    local_data_len = 0;
+    check_item_len = false;
+    item_len = 0;
+    items = 0;
+
+    // Pass the REAL received length (rx), not a fabricated constant, so legacy_extractHDPath
+    // refuses to read hdPath bytes the host did not send in this APDU (stale RAM).
+    legacy_extractHDPath(G_io_apdu_buffer, rx, LEGACY_OFFSET_HDPATH_SIZE, 0);
 
     tx_initialize();
     tx_reset();
     tx_initialized = true;
 
     uint32_t offset = hdpath_length + LEGACY_OFFSET_HDPATH_SIZE;
+
+    // The tx_type byte must also be within the received bytes.
+    if (offset + 1 > rx) {
+        tx_initialized = false;
+        THROW(APDU_CODE_WRONG_LENGTH);
+    }
 
     // save tx_type
     legacy_append_data(&G_io_apdu_buffer[offset], 1);
@@ -213,19 +257,31 @@ static uint32_t legacy_initialize_transfer() {
     return offset;
 }
 
-static uint32_t legacy_process_existing_transfer(uint32_t *payload_size) {
+static uint32_t legacy_process_existing_transfer(uint32_t *payload_size, uint32_t rx) {
     legacy_append_data(local_data, local_data_len);
 
     uint32_t offset = LEGACY_HEADER_LENGTH;
 
     if (check_item_len) {
         *payload_size = G_io_apdu_buffer[offset];
+        // Never read past the bytes the host actually sent (rx). Without this an
+        // attacker-set length byte (G_io_apdu_buffer[offset]) appends stale APDU-buffer
+        // RAM beyond rx into the signed message (OOB read + integrity break).
+        if (offset + *payload_size + 1 > rx) {
+            tx_initialized = false;
+            THROW(APDU_CODE_WRONG_LENGTH);
+        }
         legacy_append_data(&G_io_apdu_buffer[offset], *payload_size + 1);
     } else {
         if (item_len <= local_data_len) {
+            tx_initialized = false;
             THROW(APDU_CODE_DATA_INVALID);
         }
         *payload_size = item_len - local_data_len;
+        if (offset + *payload_size > rx) {
+            tx_initialized = false;
+            THROW(APDU_CODE_WRONG_LENGTH);
+        }
         legacy_append_data(&G_io_apdu_buffer[offset], *payload_size);
         offset--;
     }
@@ -241,10 +297,12 @@ static void legacy_handle_overflow(uint32_t offset, uint32_t payload_size) {
     item_len = payload_size + 1;
 
     if (offset > LEGACY_FULL_CHUNK_SIZE) {
+        tx_initialized = false;
         THROW(APDU_CODE_DATA_INVALID);
     }
     local_data_len = LEGACY_FULL_CHUNK_SIZE - offset;
     if (local_data_len >= LEGACY_LOCAL_BUFFER_SIZE) {
+        tx_initialized = false;
         THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
     }
     MEMCPY(local_data, &G_io_apdu_buffer[offset], local_data_len);
@@ -257,7 +315,7 @@ bool legacy_process_transfer_chunk(uint32_t rx) {
     }
 
     uint32_t payload_size = 0;
-    uint32_t offset = tx_initialized ? legacy_process_existing_transfer(&payload_size) : legacy_initialize_transfer();
+    uint32_t offset = tx_initialized ? legacy_process_existing_transfer(&payload_size, rx) : legacy_initialize_transfer(rx);
 
     while (offset < rx) {
         offset += payload_size + 1;
@@ -270,6 +328,14 @@ bool legacy_process_transfer_chunk(uint32_t rx) {
         if (offset == LEGACY_FULL_CHUNK_SIZE) {
             check_item_len = true;
             return false;
+        }
+
+        // offset == rx here means the previous item ended exactly at the received length;
+        // there is no next length byte to read. Reading G_io_apdu_buffer[rx] would consume
+        // a stale byte. Treat end-of-received-data as malformed rather than reading past it.
+        if (offset >= rx) {
+            tx_initialized = false;
+            THROW(APDU_CODE_DATA_INVALID);
         }
 
         payload_size = G_io_apdu_buffer[offset];

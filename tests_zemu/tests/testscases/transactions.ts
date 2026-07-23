@@ -72,6 +72,29 @@ export const TRANSACTIONS_TEST_CASES = [
       recipient_chainId: 2,
     },
   },
+  {
+    // F15 HIGH-B regression: a cross-chain transfer whose fields approach their caps assembles a
+    // ~1.2 KB template that overflowed the old 1024-byte templete_json buffer (registered with the
+    // wrong 15360 capacity). With the capacity fixed and the buffer sized to 1280 this must still
+    // sign; a full 42-char principal namespace also re-proves issue #33 on the 0x24 structured path.
+    name: 'transfer_cross_chain_max',
+    type: TransferTxType.TRANSFER_CROSS_CHAIN,
+    txParams: {
+      path: PATH,
+      recipient: '83934c0f9b005f378ba3520f9dea952fb0a90e5aa36f1b5ff837d9b30c471790',
+      amount: '1.233333333333333333333333333333',
+      network: 'testnet040000000',
+      chainId: 0,
+      gasPrice: '1.011111111111111e-6',
+      gasLimit: '0123456789',
+      creationTime: 9876543210,
+      ttl: '60000000000000000000',
+      nonce: '2022-10-13 07:56:50.893257 UTC',
+      namespace: 'n_e595727b657fbbb3b8e362a05a7bb8d12865c1ff',
+      module: 'kb-USDC',
+      recipient_chainId: 19,
+    },
+  },
 ]
 
 export const HANDLER_LEGACY_TEST_CASES = [

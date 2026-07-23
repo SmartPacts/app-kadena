@@ -184,8 +184,11 @@ items_error_t items_rotateToDisplayString(item_t item, char *outVal, uint16_t ou
 items_error_t items_gasToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen) {
     const char *gasLimit = NULL;
     const char *gasPrice = NULL;
-    uint8_t gasLimit_len = 0;
-    uint8_t gasPrice_len = 0;
+    // uint16_t, not uint8_t: a gas value span > 255 chars would wrap a uint8_t modulo
+    // 256, pass the fit check, and display only (span mod 256) chars while the full
+    // value is signed (displayed != signed). uint16_t lets required_len reject it.
+    uint16_t gasLimit_len = 0;
+    uint16_t gasPrice_len = 0;
     parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
     uint16_t item_token_index = item.json_token_index;
     uint16_t meta_token_index = item.json_token_index;
@@ -215,7 +218,11 @@ items_error_t items_gasToDisplayString(__Z_UNUSED item_t item, char *outVal, uin
 }
 
 items_error_t items_hashToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen) {
-    // TODO: why -2 here?
+    // base64_hash is char[45] holding the 44-char PADDED base64 of the 32-byte blake2b
+    // hash + NUL. A Kadena request key is UNPADDED base64url (43 chars for 32 bytes), so
+    // -2 (= 43) intentionally drops the trailing '=' padding to match what the user looks
+    // up on chain. Do NOT change to -1: that would show the '=' and diverge from the
+    // network request key.
     uint16_t len = sizeof(base64_hash) - 2;
     if (len >= outValLen) {
         return items_data_too_large;
@@ -273,16 +280,19 @@ items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, 
             PARSER_TO_ITEMS_ERROR(array_get_nth_element(json_all, token_index, i, &args_token_index));
             token = &(json_all->tokens[args_token_index]);
 
-            len = token->end - token->start + (token->type == JSMN_STRING ? sizeof("arg X: \"\",") : sizeof("arg X: ,"));
+            const uint16_t raw = token->end - token->start;
+            len = raw + (token->type == JSMN_STRING ? sizeof("arg X: \"\",") : sizeof("arg X: ,"));
 
             // Bound every write against the caller's buffer (len includes the NUL).
             if (outVal_idx + len > outValLen) {
                 return items_data_too_large;
             }
 
-            // Strings go in between double quotes
-            snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%s\"," : "arg %d: %s,", i + 1,
-                     json_all->buffer + token->start);
+            // Bound the value with an explicit precision: json_all->buffer is the raw
+            // (non-NUL-terminated) signed tx, so a plain %s would over-read past
+            // token->end into following JSON and print bytes that were never signed.
+            snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%.*s\"," : "arg %d: %.*s,",
+                     i + 1, raw, json_all->buffer + token->start);
 
             outVal_idx += len;
             outVal[outVal_idx - 1] = ' ';  // Remove null terminator
@@ -292,14 +302,15 @@ items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, 
         PARSER_TO_ITEMS_ERROR(array_get_nth_element(json_all, token_index, args_count - 1, &args_token_index));
         token = &(json_all->tokens[args_token_index]);
 
-        len = token->end - token->start + (token->type == JSMN_STRING ? sizeof("arg X: \"\"") : sizeof("arg X: "));
+        const uint16_t raw = token->end - token->start;
+        len = raw + (token->type == JSMN_STRING ? sizeof("arg X: \"\"") : sizeof("arg X: "));
 
         if (outVal_idx + len > outValLen) {
             return items_data_too_large;
         }
 
-        snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%s\"" : "arg %d: %s", args_count,
-                 json_all->buffer + token->start);
+        snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%.*s\"" : "arg %d: %.*s",
+                 args_count, raw, json_all->buffer + token->start);
     } else {
         const char *msg = "no args";
         uint16_t len_msg = strlen(msg);

@@ -240,8 +240,14 @@ static items_error_t items_storeAllTransfers() {
                         break;
                 }
             }
-            // numOfItems is < MAX here: any store that reached MAX returned
-            // items_too_many_items above, so this index is always in bounds.
+            // Every store above is now CHECK_ITEMS_ERROR-wrapped (including the
+            // wrong-arg-count else-branches inside items_storeTx*Item), so a store
+            // that reached MAX has already aborted the whole parse. Guard the index
+            // anyway: never form &items[MAX] (one past end) even if a future store
+            // path forgets to propagate items_too_many_items.
+            if (item_array.numOfItems >= MAX_NUMBER_OF_ITEMS) {
+                return items_too_many_items;
+            }
             curr_token_idx = &item_array.items[item_array.numOfItems].json_token_index;
         }
     } else {
@@ -406,7 +412,7 @@ static items_error_t items_storeTxItem(uint16_t transfer_token_index, uint8_t *n
         item_array.toString[item_array.numOfItems] = items_amountToDisplayString;
         INCREMENT_NUM_ITEMS()
     } else {
-        items_storeUnknownItem(num_of_args, token_index);
+        CHECK_ITEMS_ERROR(items_storeUnknownItem(num_of_args, token_index));
     }
 
     return items_ok;
@@ -448,7 +454,7 @@ static items_error_t items_storeTxCrossItem(uint16_t transfer_token_index, uint8
         item_array.toString[item_array.numOfItems] = items_stdToDisplayString;
         INCREMENT_NUM_ITEMS()
     } else {
-        items_storeUnknownItem(num_of_args, token_index);
+        CHECK_ITEMS_ERROR(items_storeUnknownItem(num_of_args, token_index));
     }
 
     return items_ok;
@@ -469,7 +475,7 @@ static items_error_t items_storeTxRotateItem(uint16_t transfer_token_index) {
         item_array.toString[item_array.numOfItems] = items_rotateToDisplayString;
         INCREMENT_NUM_ITEMS()
     } else {
-        items_storeUnknownItem(num_of_args, token_index);
+        CHECK_ITEMS_ERROR(items_storeUnknownItem(num_of_args, token_index));
     }
 
     return items_ok;

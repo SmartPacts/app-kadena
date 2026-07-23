@@ -114,7 +114,10 @@ parser_error_t parser_findPubKeyInClist(uint16_t key_token_index) {
         CHECK_ERROR(array_get_element_count(json_all, args_token_index, &number_of_args));
 
         for (uint16_t j = 0; j < number_of_args; j++) {
-            array_get_nth_element(json_all, args_token_index, j, &token_index);
+            // Do not dereference a stale token_index if the lookup fails.
+            if (array_get_nth_element(json_all, args_token_index, j, &token_index) != parser_ok) {
+                continue;
+            }
             value_token = &(json_all->tokens[token_index]);
             key_token = &(json_all->tokens[key_token_index]);
             uint8_t offset = 0;
@@ -172,7 +175,7 @@ parser_error_t parser_validateMetaField() {
         return parser_no_data;
     }
 
-    object_get_element_count(json_all, meta_token_index, &meta_num_elements);
+    CHECK_ERROR(object_get_element_count(json_all, meta_token_index, &meta_num_elements));
 
     if (meta_num_elements > array_length(keywords)) {
         return parser_invalid_meta_field;
@@ -270,6 +273,12 @@ parser_error_t parser_createJsonTemplate(parser_context_t *ctx) {
 
     CHECK_ERROR(parser_readSingleByte(ctx, &tx_type));
 
+    // Reject an out-of-range tx_type up front. parser_formatTxTransfer's switch has no
+    // default; an unhandled value would emit a template with no transfer verb (malformed).
+    if (tx_type != TX_TYPE_TRANSFER && tx_type != TX_TYPE_TRANSFER_CREATE && tx_type != TX_TYPE_TRANSFER_CROSSCHAIN) {
+        return parser_unexpected_value;
+    }
+
     for (int i = 0; i < MAX_FIELDS_IN_INPUT_DATA; i++) {
         CHECK_ERROR(parser_readSingleByte(ctx, &chunks[i].len));
         if (chunks[i].len > 0) {
@@ -325,12 +334,25 @@ static parser_error_t parser_readBytes(parser_context_t *ctx, uint8_t **bytes, u
     return parser_ok;
 }
 
+// Append to the template buffer and FAIL CLOSED on a short write. buffering_json_append
+// returns 0 (and appends nothing) when the buffer is full; a silently-truncated template
+// would be re-parsed and SIGNED, so any short append must abort the whole transfer.
+#define APPEND(data, length)                                     \
+    do {                                                         \
+        uint32_t __len = (uint32_t)(length);                     \
+        if (tx_json_append((uint8_t *)(data), __len) != __len) { \
+            return parser_unexpected_buffer_end;                 \
+        }                                                        \
+    } while (0)
+
 static parser_error_t parser_formatTxTransfer(uint16_t address_len, char *address, chunk_t *chunks, uint8_t tx_type) {
     if (address == NULL || chunks == NULL) {
         return parser_unexpected_value;
     }
 
-    char namespace_and_module[NAMESPACE_LEN + MODULE_LEN + 1] = {0};
+    // NAMESPACE_LEN + '.' + MODULE_LEN + NUL. The old +1 was one byte short at max caps
+    // (63 + 1 + 32 = 96 chars need 97), silently truncating the last module char via snprintf.
+    char namespace_and_module[NAMESPACE_LEN + 1 + MODULE_LEN + 1] = {0};
     if (chunks[NAMESPACE_POS].len > 0 && chunks[MODULE_POS].len > 0) {
         snprintf(namespace_and_module, sizeof(namespace_and_module), "%.*s.%.*s", chunks[NAMESPACE_POS].len,
                  chunks[NAMESPACE_POS].data, chunks[MODULE_POS].len, chunks[MODULE_POS].data);
@@ -338,92 +360,94 @@ static parser_error_t parser_formatTxTransfer(uint16_t address_len, char *addres
         snprintf(namespace_and_module, sizeof(namespace_and_module), "%s", "coin");
     }
 
-    tx_json_append((uint8_t *)"{\"networkId\":\"", 14);
-    tx_json_append((uint8_t *)chunks[NETWORK_POS].data, chunks[NETWORK_POS].len);
-    tx_json_append((uint8_t *)"\",\"payload\":{\"exec\":{\"data\":", 28);
+    APPEND((uint8_t *)"{\"networkId\":\"", 14);
+    APPEND((uint8_t *)chunks[NETWORK_POS].data, chunks[NETWORK_POS].len);
+    APPEND((uint8_t *)"\",\"payload\":{\"exec\":{\"data\":", 28);
 
     if (tx_type == TX_TYPE_TRANSFER) {
-        tx_json_append((uint8_t *)"{}", 2);
+        APPEND((uint8_t *)"{}", 2);
     } else {
-        tx_json_append((uint8_t *)"{\"ks\":{\"pred\":\"keys-all\",\"keys\":[\"", 34);
-        tx_json_append((uint8_t *)chunks[RECIPIENT_POS].data, chunks[RECIPIENT_POS].len);
-        tx_json_append((uint8_t *)"\"]}}", 4);
+        APPEND((uint8_t *)"{\"ks\":{\"pred\":\"keys-all\",\"keys\":[\"", 34);
+        APPEND((uint8_t *)chunks[RECIPIENT_POS].data, chunks[RECIPIENT_POS].len);
+        APPEND((uint8_t *)"\"]}}", 4);
     }
 
-    tx_json_append((uint8_t *)",\"code\":\"(", 10);
-    tx_json_append((uint8_t *)namespace_and_module, strlen(namespace_and_module));
+    APPEND((uint8_t *)",\"code\":\"(", 10);
+    APPEND((uint8_t *)namespace_and_module, strlen(namespace_and_module));
 
     switch (tx_type) {
         case TX_TYPE_TRANSFER:
-            tx_json_append((uint8_t *)".transfer", 9);
+            APPEND((uint8_t *)".transfer", 9);
             break;
         case TX_TYPE_TRANSFER_CREATE:
-            tx_json_append((uint8_t *)".transfer-create", 16);
+            APPEND((uint8_t *)".transfer-create", 16);
             break;
         case TX_TYPE_TRANSFER_CROSSCHAIN:
-            tx_json_append((uint8_t *)".transfer-crosschain", 20);
+            APPEND((uint8_t *)".transfer-crosschain", 20);
             break;
     }
 
-    tx_json_append((uint8_t *)" \\\"k:", 5);
-    tx_json_append((uint8_t *)address, address_len);
-    tx_json_append((uint8_t *)"\\\" \\\"k:", 7);
-    tx_json_append((uint8_t *)chunks[RECIPIENT_POS].data, chunks[RECIPIENT_POS].len);
-    tx_json_append((uint8_t *)"\\\"", 2);
+    APPEND((uint8_t *)" \\\"k:", 5);
+    APPEND((uint8_t *)address, address_len);
+    APPEND((uint8_t *)"\\\" \\\"k:", 7);
+    APPEND((uint8_t *)chunks[RECIPIENT_POS].data, chunks[RECIPIENT_POS].len);
+    APPEND((uint8_t *)"\\\"", 2);
 
     if (tx_type != TX_TYPE_TRANSFER) {
-        tx_json_append((uint8_t *)" (read-keyset \\\"ks\\\")", 21);
+        APPEND((uint8_t *)" (read-keyset \\\"ks\\\")", 21);
     }
 
     if (tx_type == TX_TYPE_TRANSFER_CROSSCHAIN) {
-        tx_json_append((uint8_t *)" \\\"", 3);
-        tx_json_append((uint8_t *)chunks[RECIPIENT_CHAIN_POS].data, chunks[RECIPIENT_CHAIN_POS].len);
-        tx_json_append((uint8_t *)"\\\"", 2);
+        APPEND((uint8_t *)" \\\"", 3);
+        APPEND((uint8_t *)chunks[RECIPIENT_CHAIN_POS].data, chunks[RECIPIENT_CHAIN_POS].len);
+        APPEND((uint8_t *)"\\\"", 2);
     }
 
-    tx_json_append((uint8_t *)" ", 1);
-    tx_json_append((uint8_t *)chunks[AMOUNT_POS].data, chunks[AMOUNT_POS].len);
-    tx_json_append((uint8_t *)")\"}},\"signers\":[{\"pubKey\":\"", 27);
-    tx_json_append((uint8_t *)address, address_len);
-    tx_json_append((uint8_t *)"\",\"clist\":[{\"args\":[\"k:", 23);
-    tx_json_append((uint8_t *)address, address_len);
-    tx_json_append((uint8_t *)"\",\"k:", 5);
-    tx_json_append((uint8_t *)chunks[RECIPIENT_POS].data, chunks[RECIPIENT_POS].len);
-    tx_json_append((uint8_t *)"\",", 2);
-    tx_json_append((uint8_t *)chunks[AMOUNT_POS].data, chunks[AMOUNT_POS].len);
+    APPEND((uint8_t *)" ", 1);
+    APPEND((uint8_t *)chunks[AMOUNT_POS].data, chunks[AMOUNT_POS].len);
+    APPEND((uint8_t *)")\"}},\"signers\":[{\"pubKey\":\"", 27);
+    APPEND((uint8_t *)address, address_len);
+    APPEND((uint8_t *)"\",\"clist\":[{\"args\":[\"k:", 23);
+    APPEND((uint8_t *)address, address_len);
+    APPEND((uint8_t *)"\",\"k:", 5);
+    APPEND((uint8_t *)chunks[RECIPIENT_POS].data, chunks[RECIPIENT_POS].len);
+    APPEND((uint8_t *)"\",", 2);
+    APPEND((uint8_t *)chunks[AMOUNT_POS].data, chunks[AMOUNT_POS].len);
 
     if (tx_type == TX_TYPE_TRANSFER_CROSSCHAIN) {
-        tx_json_append((uint8_t *)",\"", 2);
-        tx_json_append((uint8_t *)chunks[RECIPIENT_CHAIN_POS].data, chunks[RECIPIENT_CHAIN_POS].len);
-        tx_json_append((uint8_t *)"\"", 1);
+        APPEND((uint8_t *)",\"", 2);
+        APPEND((uint8_t *)chunks[RECIPIENT_CHAIN_POS].data, chunks[RECIPIENT_CHAIN_POS].len);
+        APPEND((uint8_t *)"\"", 1);
     }
 
-    tx_json_append((uint8_t *)"],\"name\":\"", 10);
-    tx_json_append((uint8_t *)namespace_and_module, strlen(namespace_and_module));
-    tx_json_append((uint8_t *)".TRANSFER", 9);
+    APPEND((uint8_t *)"],\"name\":\"", 10);
+    APPEND((uint8_t *)namespace_and_module, strlen(namespace_and_module));
+    APPEND((uint8_t *)".TRANSFER", 9);
 
     if (tx_type == TX_TYPE_TRANSFER_CROSSCHAIN) {
-        tx_json_append((uint8_t *)"_XCHAIN", 7);
+        APPEND((uint8_t *)"_XCHAIN", 7);
     }
 
-    tx_json_append((uint8_t *)"\"},{\"args\":[],\"name\":\"coin.GAS\"}]}],\"meta\":{\"creationTime\":", 59);
-    tx_json_append((uint8_t *)chunks[CREATION_TIME_POS].data, chunks[CREATION_TIME_POS].len);
-    tx_json_append((uint8_t *)",\"ttl\":", 7);
-    tx_json_append((uint8_t *)chunks[TTL_POS].data, chunks[TTL_POS].len);
-    tx_json_append((uint8_t *)",\"gasLimit\":", 12);
-    tx_json_append((uint8_t *)chunks[GAS_LIMIT_POS].data, chunks[GAS_LIMIT_POS].len);
-    tx_json_append((uint8_t *)",\"chainId\":\"", 12);
-    tx_json_append((uint8_t *)chunks[CHAIN_ID_POS].data, chunks[CHAIN_ID_POS].len);
-    tx_json_append((uint8_t *)"\",\"gasPrice\":", 13);
-    tx_json_append((uint8_t *)chunks[GAS_PRICE_POS].data, chunks[GAS_PRICE_POS].len);
-    tx_json_append((uint8_t *)",\"sender\":\"k:", 13);
-    tx_json_append((uint8_t *)address, address_len);
-    tx_json_append((uint8_t *)"\"},\"nonce\":\"", 12);
-    tx_json_append((uint8_t *)chunks[NONCE_POS].data, chunks[NONCE_POS].len);
-    tx_json_append((uint8_t *)"\"}", 2);
+    APPEND((uint8_t *)"\"},{\"args\":[],\"name\":\"coin.GAS\"}]}],\"meta\":{\"creationTime\":", 59);
+    APPEND((uint8_t *)chunks[CREATION_TIME_POS].data, chunks[CREATION_TIME_POS].len);
+    APPEND((uint8_t *)",\"ttl\":", 7);
+    APPEND((uint8_t *)chunks[TTL_POS].data, chunks[TTL_POS].len);
+    APPEND((uint8_t *)",\"gasLimit\":", 12);
+    APPEND((uint8_t *)chunks[GAS_LIMIT_POS].data, chunks[GAS_LIMIT_POS].len);
+    APPEND((uint8_t *)",\"chainId\":\"", 12);
+    APPEND((uint8_t *)chunks[CHAIN_ID_POS].data, chunks[CHAIN_ID_POS].len);
+    APPEND((uint8_t *)"\",\"gasPrice\":", 13);
+    APPEND((uint8_t *)chunks[GAS_PRICE_POS].data, chunks[GAS_PRICE_POS].len);
+    APPEND((uint8_t *)",\"sender\":\"k:", 13);
+    APPEND((uint8_t *)address, address_len);
+    APPEND((uint8_t *)"\"},\"nonce\":\"", 12);
+    APPEND((uint8_t *)chunks[NONCE_POS].data, chunks[NONCE_POS].len);
+    APPEND((uint8_t *)"\"}", 2);
 
     return parser_ok;
 }
+
+#undef APPEND
 
 static parser_error_t parser_validate_chunks(chunk_t *chunks) {
     if (chunks[RECIPIENT_POS].len != RECIPIENT_LEN) {
