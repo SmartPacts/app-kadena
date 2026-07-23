@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instalador web — app Kadena para Ledger</title>
+<script type="importmap">
+{
+  "imports": {
+    "@noble/hashes/": "./vendor/@noble/hashes/",
+    "@noble/curves/": "./vendor/@noble/curves/",
+    "@noble/ciphers/": "./vendor/@noble/ciphers/"
+  }
+}
+</script>
+<style>
+  :root { --bg: #0f1419; --panel: #1a2129; --text: #e6e6e6; --dim: #9aa5b1; --accent: #4dc0b5; --err: #e06c75; --border: #2c3640; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f7fa; --panel: #ffffff; --text: #1a2129; --dim: #5a6572; --accent: #0d9488; --err: #c0392b; --border: #d8dee6; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+  main { max-width: 780px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .subtitle { color: var(--dim); margin: 0 0 24px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 18px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; color: var(--accent); }
+  .hash { font-family: ui-monospace, Consolas, monospace; font-size: 0.95rem; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 6px 0 14px; }
+  .label { color: var(--dim); font-size: 0.9rem; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 18px; font-size: 1rem; cursor: pointer; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  a { color: var(--accent); }
+  label.check { display: flex; gap: 10px; align-items: start; margin: 14px 0; cursor: pointer; }
+  input[type=checkbox] { width: 18px; height: 18px; margin-top: 3px; }
+  progress { width: 100%; height: 14px; margin-top: 12px; }
+  .status { margin-top: 12px; min-height: 1.4em; }
+  .status.error { color: var(--err); }
+  .warn { background: #5c3c00; color: #ffd98a; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; }
+  .done { border-color: var(--accent); }
+  .security { color: var(--dim); font-size: 0.85rem; }
+  #done-panel h2 { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1 data-i18n="title"></h1>
+      <p class="subtitle" data-i18n="subtitle"></p>
+    </div>
+    <button id="lang-toggle" type="button"></button>
+  </header>
+
+  <div id="browser-warn" class="warn" data-i18n="warnBrowser" hidden></div>
+
+  <section>
+    <h2 data-i18n="step1"></h2>
+    <p data-i18n="step1Body"></p>
+    <div class="label" data-i18n="hashFile"></div>
+    <div class="hash" id="hash-file">…</div>
+    <div class="label" data-i18n="hashApp"></div>
+    <div class="hash" id="hash-app">…</div>
+    <p><a href="https://github.com/SmartPacts/app-kadena/releases/tag/v1.3.0" target="_blank" rel="noopener" data-i18n="openRelease"></a></p>
+    <label class="check"><input type="checkbox" id="approve-check"><span data-i18n="approve"></span></label>
+  </section>
+
+  <section>
+    <h2 data-i18n="step2"></h2>
+    <p data-i18n="step2Body"></p>
+    <button id="connect-btn" type="button" disabled data-i18n="connect"></button>
+    <div class="status" id="connect-status"></div>
+  </section>
+
+  <section>
+    <h2 data-i18n="step3"></h2>
+    <button id="install-btn" type="button" disabled data-i18n="install"></button>
+    <progress id="progress" max="100" value="0" hidden></progress>
+    <div class="status" id="install-status"></div>
+  </section>
+
+  <section id="done-panel" class="done" hidden>
+    <h2 data-i18n="done"></h2>
+    <p data-i18n="doneBody"></p>
+  </section>
+
+  <p class="security" data-i18n="security1"></p>
+  <p class="security" data-i18n="security2"></p>
+  <p class="security" data-i18n="security3"></p>
+</main>
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
