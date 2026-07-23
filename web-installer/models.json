@@ -1,0 +1,45 @@
+{
+  "appName": "Kadena",
+  "appVersion": "1.3.0",
+  "releaseUrl": "https://github.com/SmartPacts/app-kadena/releases/tag/v1.3.0",
+  "models": [
+    {
+      "key": "nanos2",
+      "label": "Ledger Nano S+",
+      "available": true,
+      "hexUrl": "./app.hex",
+      "targetId": "0x33100004",
+      "apiLevel": 26,
+      "appFlags": 0,
+      "dataSize": 16896,
+      "installparamsSize": 62,
+      "bootAddr": 0,
+      "officialFileSha256": "636c396aa334aa835d4a99379fd30bcdcae0403ee6a21f63e91a64d5b2b80daa",
+      "officialAppHash": "068f376be6115e1769952fabb61020ae5070867c9b2299c259f6947c5b5ce1db"
+    },
+    {
+      "key": "nanox",
+      "label": "Ledger Nano X",
+      "available": false,
+      "officialAppHash": "dc28a5786a81c2162725eb89dac3433066c37af3b4c7621177c66c4bad32127c"
+    },
+    {
+      "key": "stax",
+      "label": "Ledger Stax",
+      "available": false,
+      "officialAppHash": "592296023a6098959ff4f3e00889a6fb64c7dcc4a8fab44f367e89a77c9302e0"
+    },
+    {
+      "key": "flex",
+      "label": "Ledger Flex",
+      "available": false,
+      "officialAppHash": "d03d46f36b11d267de05b6f2aba60f6d798faabc1d0970afbe13dec138b1fca3"
+    },
+    {
+      "key": "apex_p",
+      "label": "Ledger Apex",
+      "available": false,
+      "officialAppHash": "4484159eabe9f65ffa83aaedd7eeb1a3aab3decbaa7cc34988a4bbde5fd535e5"
+    }
+  ]
+}

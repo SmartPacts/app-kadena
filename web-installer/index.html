@@ -37,6 +37,12 @@
   .status { margin-top: 12px; min-height: 1.4em; }
   .status.error { color: var(--err); }
   .warn { background: #5c3c00; color: #ffd98a; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; }
+  select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 1rem; width: 100%; }
+  .hashline { margin: 2px 0; }
+  .hlabel { display: inline-block; min-width: 9.5em; color: var(--dim); }
+  .verdict { margin-top: 6px; font-weight: 600; }
+  .verdict.ok { color: var(--accent); }
+  .verdict.bad { color: var(--err); }
   .done { border-color: var(--accent); }
   .security { color: var(--dim); font-size: 0.85rem; }
   #done-panel h2 { color: var(--accent); }
@@ -53,6 +59,11 @@
   </header>
 
   <div id="browser-warn" class="warn" data-i18n="warnBrowser" hidden></div>
+
+  <section>
+    <h2 data-i18n="step0"></h2>
+    <select id="model-select"></select>
+  </section>
 
   <section>
     <h2 data-i18n="step1"></h2>
