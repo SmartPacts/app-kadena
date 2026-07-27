@@ -34,29 +34,35 @@ Please:
 - **Have a separate and marked device that is used ONLY for development and testing**
 
 
-## Download and install
+## Installing the app
 
 *Once the app is approved by Ledger, it will be available in their app store (Ledger Live).*
 
-Until then, Nano S / S+ users can sideload a release build: download the installer script from
-the release page (https://github.com/SmartPacts/app-kadena/releases), verify it against the
-checksums and the expected device-reported application hash listed in the release notes, and
-follow these commands.
+Until then, **Nano S+ owners** can install a release build. If you are not a developer, use the
+guided installer and its documentation rather than the commands below:
 
-If the file is not executable, run
-```sh
-chmod +x ./installer_s2.sh
-```
+**https://smartpacts.io/ledger/**
 
-then run:
+Developers can load a release directly. Download `installer_nanos_plus.sh` from the
+[release page](https://github.com/SmartPacts/app-kadena/releases), verify it against
+`SHA256SUMS.txt`, and run:
 
 ```sh
-./installer_s2.sh load
+chmod +x ./installer_nanos_plus.sh
+./installer_nanos_plus.sh load
 ```
+
+This requires Python 3 with `ledgerblue` installed. **Verify the application hash your device
+displays during installation against the value published in the release notes** — that comparison,
+not the checksum of the download, is what proves which binary your device is running.
+
+Sideloading is possible on the Nano S+ only. Nano X, Stax, Flex and Gen 5 have no such path; those
+devices need the app to be listed in Ledger Live.
 
 ## Troubleshooting / Support
 If you encounter any issues while using the app, please open an issue in this repository and the
-maintainers will review it.
+maintainers will review it. Installation problems are better reported to the
+[installer repository](https://github.com/SmartPacts/kadena-ledger-installer/issues).
 
 
 # Development
