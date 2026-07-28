@@ -21,4 +21,14 @@ on:
 jobs:
   guidelines_enforcer:
     name: Call Ledger guidelines_enforcer
+    # Ledger's reusable enforcer resolves the calling repository through the
+    # public GitHub API, so on the private mirror every run dies with
+    # "caller_repository='SmartPacts/app-kadena-private' not found". It cannot
+    # succeed there at any configuration. The public repository is the one that
+    # gates store submission, and that is where this must stay green.
+    #
+    # Written as `!private` rather than an explicit repo name so it fails toward
+    # RUNNING: a typo or a rename can never silently disable this mandatory
+    # check on the public repository.
+    if: ${{ !github.event.repository.private }}
     uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_guidelines_enforcer.yml@v1

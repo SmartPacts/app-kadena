@@ -16,5 +16,15 @@ on:
 jobs:
   analyse:
     name: Call Ledger CodeQL analysis
+    # Code scanning requires GitHub Advanced Security, which is a paid add-on on
+    # private repositories: on the private mirror every run fails with "Advanced
+    # Security must be enabled for this repository to use code scanning".
+    # Runs on the public repository, where it is free and is the real gate.
+    #
+    # Written as `!private` rather than an explicit repo name so it fails toward
+    # RUNNING: if the event payload has no repository object the expression is
+    # true and the job still executes. A guard that can silently switch this off
+    # in the public repo would be worse than the failure it fixes.
+    if: ${{ !github.event.repository.private }}
     uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_codeql_checks.yml@v1
     secrets: inherit
