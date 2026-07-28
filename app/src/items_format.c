@@ -291,8 +291,8 @@ items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, 
             // Bound the value with an explicit precision: json_all->buffer is the raw
             // (non-NUL-terminated) signed tx, so a plain %s would over-read past
             // token->end into following JSON and print bytes that were never signed.
-            snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%.*s\"," : "arg %d: %.*s,",
-                     i + 1, raw, json_all->buffer + token->start);
+            snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%.*s\"," : "arg %d: %.*s,", i + 1,
+                     raw, json_all->buffer + token->start);
 
             outVal_idx += len;
             outVal[outVal_idx - 1] = ' ';  // Remove null terminator
@@ -309,8 +309,8 @@ items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, 
             return items_data_too_large;
         }
 
-        snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%.*s\"" : "arg %d: %.*s",
-                 args_count, raw, json_all->buffer + token->start);
+        snprintf(outVal + outVal_idx, len, (token->type == JSMN_STRING) ? "arg %d: \"%.*s\"" : "arg %d: %.*s", args_count,
+                 raw, json_all->buffer + token->start);
     } else {
         const char *msg = "no args";
         uint16_t len_msg = strlen(msg);
