@@ -11,12 +11,16 @@ This is the maintained continuation of the Kadena Ledger app, originally develop
 upstream repository is no longer maintained, and its last release (v1.2.0) targets Ledger
 API_LEVEL 24, which current Nano S+ firmware (OS 1.6.x = API_LEVEL 26) refuses to install.
 
-This continuation (v1.2.1):
+This continuation (current release: v1.3.0):
 
 - rebuilds the app against the current Ledger SDK (API_LEVEL 26) so it installs on today's
   firmware, for all five supported devices;
 - includes memory-safety hardening in the transaction-display renderers and the JSON parser;
-- keeps the full Zemu test matrix green across all five device targets;
+- v1.3.0 adds a whole-app security review (not only a diff review) and fixes three memory-safety
+  defects it found: a legacy HD-path length overflow, a transfer-template buffer capacity error,
+  and a parser item-array out-of-bounds write. There is no APDU / wire-protocol change. Details are
+  in [CHANGELOG.md](CHANGELOG.md);
+- keeps the full Zemu test matrix green across all five device targets (240 tests in v1.3.0);
 - is maintained by [Smart Pacts](https://smartpacts.io), with the goal of returning the app to
   official availability through the Ledger app store.
 
@@ -54,10 +58,16 @@ chmod +x ./installer_nanos_plus.sh
 
 This requires Python 3 with `ledgerblue` installed. **Verify the application hash your device
 displays during installation against the value published in the release notes** — that comparison,
-not the checksum of the download, is what proves which binary your device is running.
+not the checksum of the download, is what proves which binary your device is running. For v1.3.0
+on the Nano S+ (target `nanos2`) the expected hash is:
 
-Sideloading is possible on the Nano S+ only. Nano X, Stax, Flex and Gen 5 have no such path; those
-devices need the app to be listed in Ledger Live.
+```
+068f376be6115e1769952fabb61020ae5070867c9b2299c259f6947c5b5ce1db
+```
+
+Kadena is currently not offered in Ledger's My Ledger catalog (as of September 2026). So on the
+Nano S+ the app is installed by sideloading, as described above. Nano X, Stax, Flex and Nano Gen5
+have no sideloading path; the app stays unavailable on them until it is listed.
 
 ## Troubleshooting / Support
 If you encounter any issues while using the app, please open an issue in this repository and the
