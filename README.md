@@ -106,72 +106,54 @@ If you see conan is not found, check that you installed the package in the same 
 
 ## How to build ?
 
-> We like clion or vscode but let's have some reproducible command line steps
->
+Builds use Ledger's official builder image, the same image the CI build job and the releases use.
+Inside the container, build one target at a time by pointing `BOLOS_SDK` at the SDK the image
+ships for that device:
 
-- Building the app itself
+```bash
+docker run --rm -it -v "$(pwd):/app" -w /app \
+  ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder:latest bash
+# then, inside the container:
+make -C app -j BOLOS_SDK=$NANOSP_SDK    # Nano S Plus  -> app/build/nanos2/bin/app.elf
+make -C app -j BOLOS_SDK=$NANOX_SDK     # Nano X       -> app/build/nanox/bin/app.elf
+make -C app -j BOLOS_SDK=$STAX_SDK      # Stax         -> app/build/stax/bin/app.elf
+make -C app -j BOLOS_SDK=$FLEX_SDK      # Flex         -> app/build/flex/bin/app.elf
+make -C app -j BOLOS_SDK=$APEX_P_SDK    # Nano Gen5    -> app/build/apex_p/bin/app.elf
+```
 
-    If you installed what is described above, just run:
-    ```bash
-    make
-    ```
+`PRODUCTION_BUILD` defaults to 1. The repository's top-level `make` targets from the Zondax
+tooling point at an older builder image and are not used for releases or CI.
 
 ## Running tests
 
-- Running rust tests (x64)
+- C/C++ unit tests (host build):
 
-    If you installed the what is described above, just run:
-    ```bash
-    make rust_test
-    ```
-
-- Running C/C++ tests (x64)
-
-    If you installed the what is described above, just run:
     ```bash
     make cpp_test
     ```
 
-- Running device emulation+integration tests!!
+- Functional tests on the Speculos emulator, through Zemu, for all five device models:
 
-   ```bash
-    Use Zemu! Explained below!
+    ```bash
+    # 1. place the five ELFs where the suite expects them
+    mkdir -p app/output
+    cp app/build/nanos2/bin/app.elf  app/output/app_s2.elf
+    cp app/build/nanox/bin/app.elf   app/output/app_x.elf
+    cp app/build/stax/bin/app.elf    app/output/app_stax.elf
+    cp app/build/flex/bin/app.elf    app/output/app_flex.elf
+    cp app/build/apex_p/bin/app.elf  app/output/app_apex_p.elf
+    # 2. install and run (Docker must be running; Zemu pulls the Speculos image)
+    cd tests_zemu
+    yarn install --frozen-lockfile
+    yarn test
     ```
 
-## How to test with Zemu?
+    The suite is 4 files, 240 tests (5 models). CI runs exactly these steps on every push as the
+    `Functional tests (Zemu, five device models)` job in `.github/workflows/reusable_build.yml`,
+    against the binaries produced by Ledger's reusable build job in the same run. Failing
+    snapshots are uploaded as the `snapshots-tmp` artifact.
 
-> What is Zemu?? Great you asked!!
-> As part of this project, we are making public a beta version of our internal testing+emulation framework for Ledger apps.
->
-> Npm Package here: https://www.npmjs.com/package/@zondax/zemu
->
-> Repo here: https://github.com/Zondax/zemu
-
-Let's go! First install everything:
-> At this moment, if you change the app you will need to run `make` before running the test again.
-
-```bash
-make zemu_install
-```
-
-Then you can run JS tests:
-
-```bash
-make zemu_test
-```
-
-To run a single specific test:
-
-> At the moment, the recommendation is to run from the IDE. Remember to run `make` if you change the app.
-
-## Quick running
-To build the application and run Zemu tests for all devices, we provide a shortcut.
-
-```bash
-make test_all
-```
-
-This command will build the application for every device with `PRODUCTION_BUILD=1`, install all the JS dependencies, and finally run all the integration tests available in the project.
+    To run a single file: `yarn jest tests/standard.test.ts`.
 
 ## Using a real device
 
