@@ -11,7 +11,12 @@ Checks: "-*,
   readability-*,
   -misc-no-recursion,
   -readability-function-cognitive-complexity,
-  -readability-magic-numbers"
+  -readability-magic-numbers,
+  -portability-avoid-pragma-once,
+  -readability-use-concise-preprocessor-directives"
+# The last two checks are clang-tidy 21 additions and are style only: #pragma once
+# is the convention throughout this app and the Ledger SDK, and the #if defined()
+# spellings they flag are inherited from upstream and correct.
 WarningsAsErrors: "*"
 CheckOptions:
   - key: readability-identifier-length.MinimumVariableNameLength
