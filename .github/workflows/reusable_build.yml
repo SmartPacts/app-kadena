@@ -16,3 +16,52 @@ jobs:
     uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_build.yml@v1
     with:
       upload_app_binaries_artifact: "compiled_app_binaries"
+
+  zemu_tests:
+    name: Functional tests (Zemu, five device models)
+    needs: build_application
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download the binaries built above
+        uses: actions/download-artifact@v7
+        with:
+          name: compiled_app_binaries
+          path: app/output/ci
+
+      - name: Place the binaries where the Zemu suite expects them
+        run: |
+          set -eu
+          cd app/output
+          cp ci/nanos2/bin/app.elf app_s2.elf
+          cp ci/nanox/bin/app.elf app_x.elf
+          cp ci/stax/bin/app.elf app_stax.elf
+          cp ci/flex/bin/app.elf app_flex.elf
+          cp ci/apex_p/bin/app.elf app_apex_p.elf
+          ls -l app_*.elf
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: yarn
+          cache-dependency-path: tests_zemu/yarn.lock
+
+      - name: Install the test suite
+        working-directory: tests_zemu
+        run: yarn install --frozen-lockfile
+
+      - name: Run the Zemu suite
+        working-directory: tests_zemu
+        run: yarn test
+
+      - name: Upload failing snapshots
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: snapshots-tmp
+          path: tests_zemu/snapshots-tmp/
+          if-no-files-found: ignore
