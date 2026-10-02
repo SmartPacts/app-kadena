@@ -21,6 +21,7 @@
 #include "apdu_codes.h"
 #include "coin.h"
 #include "crypto.h"
+#include "review_lock.h"
 #include "tx.h"
 #include "zxerror.h"
 
@@ -42,19 +43,13 @@ __Z_INLINE zxerr_t app_fill_address() {
 }
 
 __Z_INLINE void app_sign() {
-    tx_type_t tx_type = get_tx_type();
-    const uint8_t *message = NULL;
-    uint16_t messageLength = 0;
-
-    if (tx_type == tx_type_transfer) {
-        message = tx_json_get_buffer();
-        messageLength = tx_json_get_buffer_length();
-    } else {
-        message = tx_get_buffer();
-        messageLength = tx_get_buffer_length();
+    // S12: sign the digest bound to the review the user approved, never a re-hash of the buffers.
+    uint8_t digest[32] = {0};
+    zxerr_t err = review_lock_digest(digest, sizeof(digest)) ? zxerr_ok : zxerr_unknown;
+    if (err == zxerr_ok) {
+        err = crypto_sign(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 3, digest, sizeof(digest));
     }
-
-    const zxerr_t err = crypto_sign(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 3, message, messageLength, tx_type);
+    review_lock_end();
 
     if (err != zxerr_ok) {
         set_code(G_io_apdu_buffer, 0, APDU_CODE_SIGN_VERIFY_ERROR);
@@ -66,6 +61,7 @@ __Z_INLINE void app_sign() {
 }
 
 __Z_INLINE void app_reject() {
+    review_lock_end();
     MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
     set_code(G_io_apdu_buffer, 0, APDU_CODE_COMMAND_NOT_ALLOWED);
     io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, 2);

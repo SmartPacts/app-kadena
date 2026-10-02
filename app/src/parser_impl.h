@@ -33,6 +33,7 @@ extern "C" {
 #define JSON_META "meta"
 #define JSON_SIGNERS "signers"
 #define JSON_PUBKEY "pubKey"
+#define JSON_ADDR "addr"
 #define JSON_CLIST "clist"
 #define JSON_ARGS "args"
 #define JSON_NAME "name"
@@ -71,6 +72,12 @@ parser_error_t parser_getTxName(uint16_t token_index);
 parser_error_t parser_getValidClist(uint16_t *clist_token_index, uint16_t *num_args);
 bool items_isNullField(uint16_t json_token_index);
 parser_error_t parser_createJsonTemplate(parser_context_t *ctx);
+parser_error_t parser_findDeviceSigner();
+uint16_t parser_getDeviceSignerIndex();
+uint16_t parser_getSignersCount();
+#if !defined(LEDGER_SPECIFIC)
+void parser_setTestDeviceKeyHex(const char *hex);
+#endif
 
 #ifdef __cplusplus
 }

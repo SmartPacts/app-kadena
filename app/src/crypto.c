@@ -61,26 +61,15 @@ catch_cx_error:
     return error;
 }
 
-zxerr_t crypto_sign(uint8_t *signature, uint16_t signatureMaxlen, const uint8_t *message, uint16_t messageLen,
-                    tx_type_t tx_type) {
-    if (signature == NULL || message == NULL || signatureMaxlen < ED25519_SIGNATURE_SIZE || messageLen == 0) {
+// Signs a 32-byte digest as is (S12: the digest bound to the review when it was shown; it is never
+// recomputed from a transaction buffer here).
+zxerr_t crypto_sign(uint8_t *signature, uint16_t signatureMaxlen, const uint8_t *digest, uint16_t digestLen) {
+    if (signature == NULL || digest == NULL || signatureMaxlen < ED25519_SIGNATURE_SIZE || digestLen != BLAKE2B_HASH_SIZE) {
         return zxerr_invalid_crypto_settings;
     }
 
     cx_ecfp_private_key_t cx_privateKey;
     uint8_t privateKeyData[SK_LEN_25519] = {0};
-
-    uint8_t hash[BLAKE2B_HASH_SIZE] = {0};
-    if (tx_type == tx_type_hash) {
-        // Defense in depth: callers reach here only via _read_hash_tx which enforces
-        // exactly HASH_LEN bytes, but never copy 32 bytes from a shorter message.
-        if (messageLen < BLAKE2B_HASH_SIZE) {
-            return zxerr_invalid_crypto_settings;
-        }
-        MEMCPY(hash, message, BLAKE2B_HASH_SIZE);
-    } else {
-        CHECK_ZXERR(blake2b_hash((uint8_t *)message, messageLen, hash))
-    }
 
     zxerr_t error = zxerr_unknown;
     // Generate keys
@@ -90,7 +79,7 @@ zxerr_t crypto_sign(uint8_t *signature, uint16_t signatureMaxlen, const uint8_t 
     CATCH_CXERROR(cx_ecfp_init_private_key_no_throw(CX_CURVE_Ed25519, privateKeyData, SCALAR_LEN_ED25519, &cx_privateKey));
 
     // Sign
-    CATCH_CXERROR(cx_eddsa_sign_no_throw(&cx_privateKey, CX_SHA512, hash, BLAKE2B_HASH_SIZE, signature, signatureMaxlen));
+    CATCH_CXERROR(cx_eddsa_sign_no_throw(&cx_privateKey, CX_SHA512, digest, BLAKE2B_HASH_SIZE, signature, signatureMaxlen));
 
     error = zxerr_ok;
 

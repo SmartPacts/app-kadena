@@ -21,6 +21,7 @@
 #include "apdu_codes.h"
 #include "buffering.h"
 #include "buffering_json.h"
+#include "items.h"
 #include "parser.h"
 #include "zxmacros.h"
 
@@ -110,6 +111,9 @@ const char *tx_parse(uint32_t buffer_length, tx_type_t tx_type_parse, uint8_t *e
     }
 
     err = parser_validate(&ctx_parsed_tx);
+    if (error_code != NULL) {
+        *error_code = err;
+    }
     CHECK_APP_CANARY()
 
     if (err != parser_ok) {

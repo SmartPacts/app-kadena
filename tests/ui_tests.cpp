@@ -24,6 +24,7 @@
 #include "app_mode.h"
 #include "gmock/gmock.h"
 #include "parser.h"
+#include "parser_impl.h"
 #include "utils/common.h"
 
 using json = nlohmann::json;
@@ -36,6 +37,12 @@ typedef struct {
     std::string blob;
     std::vector<std::string> expected;
     std::vector<std::string> expected_expert;
+    // The key the parser treats as the device's. Default: signers[0].pubKey of the blob.
+    std::string device_key;
+    // The Blind signing setting (default off).
+    bool blindsign;
+    // When set, the transaction must be refused with this error description.
+    std::string error;
 } testcase_t;
 
 class JsonTestsA : public ::testing::TestWithParam<testcase_t> {
@@ -84,8 +91,26 @@ std::vector<testcase_t> GetJsonTestCases(std::string jsonFile) {
             outputs_expert.push_back(s.get<std::string>());
         }
 
-        answer.push_back(testcase_t{test_case_json["index"].get<uint64_t>(), test_case_json["name"].get<std::string>(),
-                                    test_case_json["blob"].get<std::string>(), outputs, outputs_expert});
+        const std::string blob = test_case_json["blob"].get<std::string>();
+
+        std::string device_key;
+        if (test_case_json.contains("device_key")) {
+            device_key = test_case_json["device_key"].get<std::string>();
+        } else {
+            std::vector<uint8_t> raw(blob.size() / 2 + 1, 0);
+            parseHexString(raw.data(), raw.size(), blob.c_str());
+            const json tx = json::parse(reinterpret_cast<const char *>(raw.data()), nullptr, false);
+            if (!tx.is_discarded() && tx.contains("signers") && tx["signers"].is_array() && !tx["signers"].empty() &&
+                tx["signers"][0].contains("pubKey") && tx["signers"][0]["pubKey"].is_string()) {
+                device_key = tx["signers"][0]["pubKey"].get<std::string>();
+            }
+        }
+
+        const bool blindsign = test_case_json.value("blindsign", false);
+        const std::string error = test_case_json.value("error", std::string());
+
+        answer.push_back(testcase_t{test_case_json["index"].get<uint64_t>(), test_case_json["name"].get<std::string>(), blob,
+                                    outputs, outputs_expert, device_key, blindsign, error});
     }
 
     return answer;
@@ -93,6 +118,8 @@ std::vector<testcase_t> GetJsonTestCases(std::string jsonFile) {
 
 void check_testcase(const testcase_t &tc, bool expert_mode) {
     app_mode_set_expert(expert_mode);
+    app_mode_set_blindsign(tc.blindsign);
+    parser_setTestDeviceKeyHex(tc.device_key.c_str());
 
     parser_context_t ctx;
     parser_error_t err;
@@ -102,6 +129,16 @@ void check_testcase(const testcase_t &tc, bool expert_mode) {
     uint16_t bufferLen = parseHexString(buffer, sizeof(buffer), tc.blob.c_str());
 
     err = parser_parse(&ctx, buffer, strlen((char *)buffer), tx_type_json);
+    if (err == parser_ok) {
+        err = parser_validate(&ctx);
+    }
+
+    if (!tc.error.empty()) {
+        ASSERT_NE(err, parser_ok) << "expected refusal: " << tc.error;
+        EXPECT_STREQ(parser_getErrorDescription(err), tc.error.c_str());
+        return;
+    }
+
     ASSERT_EQ(err, parser_ok) << parser_getErrorDescription(err);
 
     auto output = dumpUI(&ctx, 39, 39);

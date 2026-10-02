@@ -24,7 +24,6 @@
 static bool tx_initialized = false;
 static uint32_t payload_length = 0;
 static uint32_t hdpath_length = 0;
-static tx_type_t tx_type = tx_type_json;
 static uint8_t local_data_len = 0;
 static uint8_t local_data[LEGACY_LOCAL_BUFFER_SIZE];
 static uint8_t items = 0;
@@ -32,10 +31,13 @@ static uint8_t item_len = 0;
 static bool check_item_len = false;
 
 void legacy_app_sign() {
-    const uint8_t *message = tx_get_buffer();
-    const uint16_t messageLength = tx_get_buffer_length() - hdpath_length;
-
-    const zxerr_t err = crypto_sign(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 3, message, messageLength, tx_type);
+    // S12: sign the digest bound to the review the user approved, never a re-hash of the buffers.
+    uint8_t digest[32] = {0};
+    zxerr_t err = review_lock_digest(digest, sizeof(digest)) ? zxerr_ok : zxerr_unknown;
+    if (err == zxerr_ok) {
+        err = crypto_sign(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 3, digest, sizeof(digest));
+    }
+    review_lock_end();
 
     if (err != zxerr_ok) {
         set_code(G_io_apdu_buffer, 0, APDU_CODE_SIGN_VERIFY_ERROR);
@@ -47,17 +49,24 @@ void legacy_app_sign() {
 }
 
 void legacy_app_sign_transference() {
-    const uint8_t *message = tx_json_get_buffer();
-    const uint16_t messageLength = tx_json_get_buffer_length();
+    // S12: sign the digest bound to the review the user approved, never a re-hash of the buffers.
+    uint8_t digest[32] = {0};
+    zxerr_t zxerr = review_lock_digest(digest, sizeof(digest)) ? zxerr_ok : zxerr_unknown;
+    review_lock_end();
+    if (zxerr != zxerr_ok) {
+        set_code(G_io_apdu_buffer, 0, APDU_CODE_SIGN_VERIFY_ERROR);
+        io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, 2);
+        return;
+    }
 
     // get pubkey
-    zxerr_t zxerr = app_fill_address();
+    zxerr = app_fill_address();
     if (zxerr != zxerr_ok) {
         THROW(APDU_CODE_DATA_INVALID);
     }
     MEMMOVE(G_io_apdu_buffer + SK_LEN_25519, G_io_apdu_buffer, action_addrResponseLen);
 
-    zxerr = crypto_sign(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 3, message, messageLength, tx_type);
+    zxerr = crypto_sign(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 3, digest, sizeof(digest));
 
     if (zxerr != zxerr_ok) {
         set_code(G_io_apdu_buffer, 0, APDU_CODE_SIGN_VERIFY_ERROR);
@@ -292,9 +301,17 @@ static uint32_t legacy_process_existing_transfer(uint32_t *payload_size, uint32_
     return offset;
 }
 
-static void legacy_handle_overflow(uint32_t offset, uint32_t payload_size) {
+static void legacy_handle_overflow(uint32_t rx, uint32_t offset, uint32_t payload_size) {
     check_item_len = false;
     item_len = payload_size + 1;
+
+    // An item may continue in the next APDU only when this APDU is a full chunk. Otherwise the
+    // bytes up to LEGACY_FULL_CHUNK_SIZE were never received and the copy below would read stale
+    // APDU-buffer bytes past rx.
+    if (rx != LEGACY_FULL_CHUNK_SIZE) {
+        tx_initialized = false;
+        THROW(APDU_CODE_WRONG_LENGTH);
+    }
 
     if (offset > LEGACY_FULL_CHUNK_SIZE) {
         tx_initialized = false;
@@ -342,8 +359,16 @@ bool legacy_process_transfer_chunk(uint32_t rx) {
         uint32_t next_offset = offset + payload_size + 1;
 
         if (next_offset > LEGACY_FULL_CHUNK_SIZE) {
-            legacy_handle_overflow(offset, payload_size);
+            legacy_handle_overflow(rx, offset, payload_size);
             return false;
+        }
+
+        // The whole item must lie inside the bytes received in this APDU. Without this bound a
+        // length byte claiming more than was sent appends stale APDU-buffer bytes past rx into the
+        // signed message (for the last item, the ttl, which is never displayed).
+        if (next_offset > rx) {
+            tx_initialized = false;
+            THROW(APDU_CODE_WRONG_LENGTH);
         }
 
         legacy_append_data(&G_io_apdu_buffer[offset], payload_size + 1);
@@ -411,15 +436,33 @@ void legacy_handleSignTransaction(volatile uint32_t *flags, volatile uint32_t *t
     // Reset BLS UI for next transaction
     app_mode_skip_blindsign_ui();
 
-    const char *error_msg = tx_parse(buffer_length, tx_type_json, NULL);
-    tx_type = tx_type_json;
+    uint8_t error_code = 0;
+    const char *error_msg = tx_parse(buffer_length, tx_type_json, &error_code);
     CHECK_APP_CANARY()
     if (error_msg != NULL) {
+        if (error_code == parser_blindsign_mode_required) {
+            // Same reply as the legacy hash path: the blind-signing screen, then message + 0x6984.
+            const int error_msg_length = strnlen(error_msg, sizeof(G_io_apdu_buffer));
+            if (error_msg_length > (int)(sizeof(G_io_apdu_buffer) - 2)) {
+                *tx = 0;
+                THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
+            }
+            MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
+            MEMCPY(G_io_apdu_buffer, error_msg, error_msg_length);
+            *tx += (error_msg_length);
+            G_error_message_offset = error_msg_length;
+            *flags |= IO_ASYNCH_REPLY;
+            view_blindsign_error_show();
+            THROW(APDU_CODE_DATA_INVALID);
+        }
         tx_reset();
         *tx = 0;
         THROW(APDU_CODE_DATA_INVALID);
     }
 
+    if (!review_lock_begin()) {
+        THROW(APDU_CODE_DATA_INVALID);
+    }
     view_review_init(tx_getItem, tx_getNumItems, legacy_app_sign);
     view_review_show(REVIEW_TXN);
     *flags |= IO_ASYNCH_REPLY;
@@ -437,7 +480,6 @@ void legacy_handleSignHash(volatile uint32_t *flags, volatile uint32_t *tx, uint
 
     uint8_t error_code = 0;
     const char *error_msg = tx_parse(buffer_length, tx_type_hash, &error_code);
-    tx_type = tx_type_hash;
     CHECK_APP_CANARY()
     if (error_msg != NULL) {
         const int error_msg_length = strnlen(error_msg, sizeof(G_io_apdu_buffer));
@@ -457,6 +499,9 @@ void legacy_handleSignHash(volatile uint32_t *flags, volatile uint32_t *tx, uint
         THROW(APDU_CODE_DATA_INVALID);
     }
 
+    if (!review_lock_begin()) {
+        THROW(APDU_CODE_DATA_INVALID);
+    }
     view_review_init(tx_getItem, tx_getNumItems, legacy_app_sign);
     view_review_show(REVIEW_TXN);
     *flags |= IO_ASYNCH_REPLY;
@@ -478,7 +523,6 @@ void legacy_handleSignTransferTx(volatile uint32_t *flags, volatile uint32_t *tx
     app_mode_skip_blindsign_ui();
 
     const char *error_msg = tx_parse(buffer_length, tx_type_transfer, NULL);
-    tx_type = tx_type_transfer;
     CHECK_APP_CANARY()
     if (error_msg != NULL) {
         tx_reset();
@@ -486,6 +530,9 @@ void legacy_handleSignTransferTx(volatile uint32_t *flags, volatile uint32_t *tx
         THROW(APDU_CODE_DATA_INVALID);
     }
 
+    if (!review_lock_begin()) {
+        THROW(APDU_CODE_DATA_INVALID);
+    }
     view_review_init(tx_getItem, tx_getNumItems, legacy_app_sign_transference);
     view_review_show(REVIEW_TXN);
     *flags |= IO_ASYNCH_REPLY;

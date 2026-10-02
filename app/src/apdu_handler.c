@@ -28,6 +28,7 @@
 #include "coin.h"
 #include "crypto.h"
 #include "parser_txdef.h"
+#include "review_lock.h"
 #include "tx.h"
 #include "view.h"
 #include "view_internal.h"
@@ -36,6 +37,7 @@
 // This is for backward compatibility with the legacy app, we need to redefine some instructions
 #undef INS_GET_VERSION
 #define INS_GET_VERSION 0x20
+_Static_assert(INS_GET_VERSION == REVIEW_LOCK_INS_GET_VERSION, "S12 lock must allow GET_VERSION");
 #undef INS_GET_ADDR
 #define INS_GET_ADDR 0x21
 #undef INS_SIGN
@@ -157,6 +159,9 @@ __Z_INLINE void handleSign(volatile uint32_t *flags, volatile uint32_t *tx, uint
         THROW(APDU_CODE_DATA_INVALID);
     }
 
+    if (!review_lock_begin()) {
+        THROW(APDU_CODE_DATA_INVALID);
+    }
     view_review_init(tx_getItem, tx_getNumItems, app_sign);
     view_review_show(REVIEW_TXN);
     *flags |= IO_ASYNCH_REPLY;
@@ -207,6 +212,13 @@ void handleApdu(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) {
 
             if (rx < APDU_MIN_LENGTH) {
                 THROW(APDU_CODE_WRONG_LENGTH);
+            }
+
+            // S12: while a signing review waits for the user, refuse every command but GET_VERSION
+            // (GET_DEVICE_INFO is answered before this dispatcher), before any handler can touch the
+            // pending stream, path or buffers.
+            if (!review_lock_allows(G_io_apdu_buffer[OFFSET_INS])) {
+                THROW(APDU_CODE_COMMAND_NOT_ALLOWED);
             }
 
             switch (G_io_apdu_buffer[OFFSET_INS]) {

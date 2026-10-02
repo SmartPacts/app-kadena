@@ -67,6 +67,7 @@ typedef enum {
     key_unknown_capability,
     key_transaction_hash,
     key_sign_for_address,
+    key_signers,
 } display_title_t;
 
 typedef struct {

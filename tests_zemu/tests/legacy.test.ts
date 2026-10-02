@@ -235,8 +235,13 @@ describe.each(HASH_TEST_CASES)('Hash transactions BLS off', function (data) {
 describe.each(TRANSACTIONS_TEST_CASES)('Tx transfer', function (data) {
   test.concurrent.each(models)('sign transfer tx', async function (m) {
     const sim = new Zemu(m.path)
+    // Since v1.3.1 (S13) a token transfer (a namespace and module) is signed only with Blind signing on.
+    const blind = !!data.txParams.namespace
     try {
       await sim.start({ ...defaultOptions, model: m.name })
+      if (blind) {
+        await sim.toggleBlindSigning()
+      }
       const app = new Kda(sim.getTransport())
 
       const { publicKey } = await app.getPublicKey(data.txParams.path)
@@ -252,7 +257,7 @@ describe.each(TRANSACTIONS_TEST_CASES)('Tx transfer', function (data) {
       }
 
       await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
-      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_${data.name}_legacy`)
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_${data.name}_legacy`, true, 0, 15000, blind)
 
       // Wait until we are not in the main menu
       const signatureResponse = await signatureRequest
@@ -281,8 +286,13 @@ describe.each(TRANSACTIONS_TEST_CASES)('Tx transfer', function (data) {
 describe.each(HANDLER_LEGACY_TEST_CASES)('Tx transfer', function (data) {
   test.concurrent.each(models)('apdu legacy test', async function (m) {
     const sim = new Zemu(m.path)
+    // Since v1.3.1 (S13) a token transfer (a namespace and module) is signed only with Blind signing on.
+    const blind = !!data.txParams.namespace
     try {
       await sim.start({ ...defaultOptions, model: m.name })
+      if (blind) {
+        await sim.toggleBlindSigning()
+      }
       const app = new Kda(sim.getTransport())
 
       const { publicKey } = await app.getPublicKey(data.txParams.path)
@@ -298,7 +308,7 @@ describe.each(HANDLER_LEGACY_TEST_CASES)('Tx transfer', function (data) {
       }
 
       await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
-      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-${data.name}`)
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-${data.name}`, true, 0, 15000, blind)
 
       // Wait until we are not in the main menu
       const signatureResponse = await signatureRequest

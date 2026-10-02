@@ -14,15 +14,13 @@
  *  limitations under the License.
  ******************************************************************************* */
 
-import Zemu from '@zondax/zemu'
+import Zemu, { ButtonKind, isTouchDevice } from '@zondax/zemu'
 import { KadenaApp } from '@zondax/ledger-kadena'
 import { PATH, defaultOptions, models } from './common'
-import { blake2bFinal, blake2bInit, blake2bUpdate } from 'blakejs'
+import { getTouchElement } from '@zondax/zemu/dist/buttons'
+import { IButton } from '@zondax/zemu/dist/types'
 
 import { NEGATIVE_SIGN_CASES, UNKNOWN_CAP_RENDER_CASE } from './testscases/negative'
-
-// @ts-expect-error
-import ed25519 from 'ed25519-supercop'
 
 jest.setTimeout(60000)
 
@@ -51,33 +49,40 @@ describe.each(NEGATIVE_SIGN_CASES)('Negative sign (fail closed)', function (data
   })
 })
 
-// Unknown capability with a string arg: the corrected renderer uses %.*s (bounded) instead of %s
-// (which over-read past the token). This is a positive case — it signs — and its snapshot pins the
-// faithful on-screen arg rendering (displayed == signed).
-describe('Unknown-capability arg rendering', function () {
-  test.concurrent.each(models)('renders faithfully and signs', async function (m) {
+// Unknown capability with a string arg. Since v1.3.1 (S10) a capability the device does not
+// fully render is NOT clear-signed: it requires the Blind signing setting and, with it off, is
+// refused. The faithful bounded arg rendering (trap-19 fix) is pinned by the C++ unit vectors
+// (tests/testcases.json arbitrary_cap_*). Here we assert the refusal with Blind signing off:
+// the blind-signing screen, then 0x6984.
+describe('Unknown capability requires blind signing', function () {
+  test.concurrent.each(models)('refuses with Blind signing off', async function (m) {
     const sim = new Zemu(m.path)
     try {
       await sim.start({ ...defaultOptions, model: m.name })
       const app = new KadenaApp(sim.getTransport())
-
-      const txBlob = Buffer.from(UNKNOWN_CAP_RENDER_CASE.json, 'utf-8')
-      const responseAddr = await app.getAddressAndPubKey(UNKNOWN_CAP_RENDER_CASE.path, false)
-      const pubKey = responseAddr.pubkey
-
-      const signatureRequest = app.sign(UNKNOWN_CAP_RENDER_CASE.path, txBlob)
-
+      const refusal = app.sign(UNKNOWN_CAP_RENDER_CASE.path, Buffer.from(UNKNOWN_CAP_RENDER_CASE.json, 'utf-8'))
+      const assertion = expect(refusal).rejects.toMatchObject({
+        returnCode: 0x6984,
+        errorMessage: expect.stringContaining('Blind signing mode required'),
+      })
+      // The refusal is reported on screen and the reply is deferred until the user dismisses it.
       await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
-      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-${UNKNOWN_CAP_RENDER_CASE.name}`)
-
-      const signatureResponse = await signatureRequest
-
-      const context = blake2bInit(32)
-      blake2bUpdate(context, txBlob)
-      const hash = Buffer.from(blake2bFinal(context))
-
-      const valid = ed25519.verify(signatureResponse.signature, hash, pubKey)
-      expect(valid).toEqual(true)
+      // The refusal's reply (0x6984) can arrive while Zemu still waits for the screen to repaint, and
+      // Zemu then aborts that wait with a 0x6984 transport error; only that error is tolerated.
+      try {
+        if (isTouchDevice(m.name)) {
+          await sim.fingerTouch(getTouchElement(m.name, ButtonKind.RejectButton) as IButton)
+        } else {
+          await sim.waitForText('Blind signing must be')
+          await sim.clickBoth()
+        }
+      } catch (e: any) {
+        if (e?.statusCode !== 0x6984) throw e
+      }
+      await assertion
+      // The app survives.
+      const v = await app.getVersion()
+      expect(v).toHaveProperty('major')
     } finally {
       await sim.close()
     }

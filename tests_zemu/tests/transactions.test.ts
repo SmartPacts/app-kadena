@@ -142,8 +142,14 @@ describe.each(HASH_TEST_CASES)('Hash transactions BLS off', function (data) {
 describe.each(TRANSACTIONS_TEST_CASES)('Tx transfer', function (data) {
   test.concurrent.each(models)('sign transfer tx', async function (m) {
     const sim = new Zemu(m.path)
+    // Since v1.3.1 (S13) the device clear-signs only a plain coin transfer here: a token
+    // transfer (a namespace and module) is signed only with the Blind signing setting on.
+    const blind = !!data.txParams.namespace
     try {
       await sim.start({ ...defaultOptions, model: m.name })
+      if (blind) {
+        await sim.toggleBlindSigning()
+      }
       const app = new KadenaApp(sim.getTransport())
 
       const responseAddr = await app.getAddressAndPubKey(data.txParams.path)
@@ -171,7 +177,7 @@ describe.each(TRANSACTIONS_TEST_CASES)('Tx transfer', function (data) {
 
       // Wait until we are not in the main menu
       await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
-      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_${data.name}`)
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_${data.name}`, true, 0, 15000, blind)
 
       const signatureResponse = await signatureRequest
 

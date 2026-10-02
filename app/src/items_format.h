@@ -26,6 +26,8 @@
 #define HASH_WARNING_TEXT \
     "Blind Signing a Transaction Hash is a very unusual operation. Do not continue unless you know what you are doing"
 #define CAUTION_TEXT "'meta' field of transaction not recognized"
+#define ROTATE_WARNING_TEXT "Account rotation: new owner not shown"
+#define CAP_NOT_VERIFIED_PREFIX "Capability not verified: "
 #define TX_TOO_LARGE_TEXT \
     "Transaction too large for Ledger to display.  PROCEED WITH GREAT CAUTION.  Do you want to continue?"
 
@@ -44,6 +46,9 @@ items_error_t items_rotateToDisplayString(item_t item, char *outVal, uint16_t ou
 items_error_t items_gasToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 items_error_t items_hashToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, uint16_t outValLen);
+items_error_t items_signersToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen);
+items_error_t items_rotateWarningToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen);
+items_error_t items_capNotVerifiedToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 #if defined(LEDGER_SPECIFIC)
 items_error_t items_signForAddrToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen);
 #endif

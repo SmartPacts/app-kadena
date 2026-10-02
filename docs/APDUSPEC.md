@@ -40,6 +40,67 @@ The general structure of commands and responses is as follows:
 | 0x6F01      | Sign / verify error     |
 | 0x9000      | Success                 |
 
+### Signing policy (v1.3.1)
+
+The device builds or displays the transaction it signs, so it enforces which transactions it will
+sign. For every JSON-signing command (INS 0x22 and legacy INS 0x03) and every structured-transfer
+command (INS 0x24 and legacy INS 0x10):
+
+- The device derives its own public key for the derivation path being signed and reviews the one
+  `signers` entry that names that key, by `pubKey` or `addr`, in any letter case. If no entry names
+  the device key, or more than one does, the command is refused with `0x6984` (a bare `0x6984` on
+  the legacy commands, an error message plus `0x6984` on the modern ones). The reviewed entry's
+  `pubKey` must be the exact lowercase hex of the device key, and signer-entry key names and their
+  `pubKey`/`addr` values may not contain JSON escapes. When there is more than one entry, the review
+  shows `Signers: N`.
+- A `signers` entry whose capability list is missing, `null`, or empty (`[]`, any whitespace) is
+  unscoped: the review shows the `Unscoped Signer` item and the unsafe-transaction WARNING.
+- A capability argument matches the signer key only when, after an optional `k:` prefix, it equals
+  the key exactly (no prefix match).
+- When the reviewed entry holds `coin.ROTATE`, the review shows a warning that the account's new
+  owner is not shown, and signing requires the *Blind signing* setting to be enabled (the same
+  refusal screen and `0x6984` as hash signing when it is off).
+- For the JSON-signing commands (INS 0x22 and legacy INS 0x03), where the host writes the
+  capability list, the device clear-signs only `coin.GAS`, `coin.TRANSFER` and
+  `coin.TRANSFER_XCHAIN` in the reviewed entry. Any other capability there (`coin.DEBIT`,
+  `coin.CREDIT`, any other `coin` capability, any other module's capability, a token module's
+  `TRANSFER` included) requires the *Blind signing* setting, as `coin.ROTATE` does: with it off the
+  command is refused with `0x6984` (`Blind signing mode required`, after the blind-signing screen,
+  on 0x03 too); with it on the
+  review adds `WARNING: Capability not verified: <name>` after the capability's items. For the
+  structured-transfer commands (INS 0x24 and legacy INS 0x10), a plain `coin` transfer is
+  clear-signed with no warning. When the namespace and module name a token other than `coin`, the
+  transfer needs the *Blind signing* setting too, because the device cannot check that module's
+  code: with it off the command is refused with `0x6984` (`Blind signing mode required` after the
+  blind-signing screen on 0x24, bare on 0x10); with it on the review adds
+  `WARNING: Capability not verified: <namespace>.<module>.TRANSFER` (or `TRANSFER_XCHAIN`).
+- While a signing review (INS 0x22, 0x23, 0x24, legacy 0x03, 0x04, 0x10) waits for the user, every
+  command except GET_VERSION (INS 0x20) is refused with `0x6986` and changes nothing; the
+  device-information command (CLA 0xE0, INS 0x01) is answered by the system library, and the legacy
+  version command (INS 0x00) is refused. The lock ends when the review is approved or rejected.
+  Approval signs the digest computed when the reviewed transaction was parsed (blake2b-256 of the
+  JSON, or the 32 bytes of a hash to sign). If USB power is lost during a review, the lock stays set
+  until the app is reopened, and signing commands are refused with `0x6986` until then.
+- A `coin.TRANSFER` or `coin.TRANSFER_XCHAIN` amount in the reviewed entry must be either a bare
+  JSON number or an object with the single key `"decimal"` whose value is a string; the number or
+  string must be `digits` or `digits.digits`, with no leading zero in the integer part (`0.5` is
+  accepted, `01.0` is not). The review shows the plain number (`KDA 231` for `{"decimal":"231"}`).
+  Anything else (an exponent, a string, `{"int":…}`, other or extra keys, a number or object as the
+  value, an escape or a space in the string, a sign, a leading or trailing dot) is refused with
+  `0x6984` (`Unexpected characters`; bare on 0x03).
+- No JSON object key may contain an escape (`\`), anywhere in the document; no capability name in
+  the reviewed signer entry may contain an escape; and no key may appear twice (byte for byte)
+  within one object. Otherwise the command is refused with `0x6984` (`Unexpected characters`, or
+  `Unexpected duplicated field` for a repeated key; bare on the legacy commands). String values keep
+  their escapes.
+
+For the structured-transfer commands the device also checks every field against the content its
+position allows before building the JSON, and refuses a violation with `0x6984` (`Unexpected
+characters`; a bare `0x6984` on legacy 0x10): lowercase-hex recipient; digit-only chain ids; a
+decimal (`digits (. digits)?`) amount, gas limit, creation time and TTL; a JSON number (an optional
+exponent) gas price; Pact identifier characters for namespace and module; letters, digits and
+`-_.` for the network; and printable ASCII without `"` or `\` for the nonce.
+
 ---
 
 ## Command definition
@@ -266,6 +327,10 @@ All other packets/chunks contain data chunks that are described below
 | ttl_len             | byte (1)                    | TTL Length                  |                     |
 | ttl                 | byte (ttl_len)              | TTL                         | (0..20)             |
 
+Each field is also validated by content (see **Signing policy (v1.3.1)**): the recipient is
+lowercase hex, numeric fields are well-formed numbers, and no field may contain a quote, backslash
+or other character that would change the structure of the signed JSON.
+
 #### Tx type
 
 | Tx type     | Description           |
@@ -482,6 +547,10 @@ Builds a transfer transaction using the input data, and provides a signature for
 | nonce               | byte (nonce_len)            | Nonce                       | (0..32)             |
 | ttl_len             | byte (1)                    | TTL Length                  |                     |
 | ttl                 | byte (ttl_len)              | TTL                         | (0..20)             |
+
+Each field is also validated by content (see **Signing policy (v1.3.1)**): the recipient is
+lowercase hex, numeric fields are well-formed numbers, and no field may contain a quote, backslash
+or other character that would change the structure of the signed JSON.
 
 #### Tx type
 

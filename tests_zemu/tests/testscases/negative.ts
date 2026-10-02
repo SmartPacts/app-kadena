@@ -5,10 +5,14 @@ import { PATH } from '../common'
 // never crash (a crash surfaces as the Speculos event port dropping in Zemu). Kept as raw JSON so
 // the malicious shapes are explicit and self-contained.
 
-const FROM = '83934c0f9b005f378ba3520f9dea952fb0a90e5aa36f1b5ff837d9b30c471790'
+// The device key for PATH. v1.3.1 reviews the signer entry of the device's own key and refuses a
+// transaction without one, so each case is built for a signer: the device key, or the v1.3.0
+// fixtures' key (V1_3_0_SIGNER) to keep the original payloads as refusal cases.
+const DEVICE = 'de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad'
+const V1_3_0_SIGNER = '83934c0f9b005f378ba3520f9dea952fb0a90e5aa36f1b5ff837d9b30c471790'
 const TO = '9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42'
 
-const CODE = `(coin.transfer \\"${FROM}\\" \\"${TO}\\" 11.0)`
+const code = (from: string) => `(coin.transfer \\"${from}\\" \\"${TO}\\" 11.0)`
 
 // A clist of 96 coin.TRANSFER entries each with the WRONG arg count (2, not 3) so every one takes
 // the else-branch at items.c:409 that (pre-fix) called items_storeUnknownItem and swallowed its
@@ -37,23 +41,23 @@ function manyRotateClist(): string {
 // digits were shown while the full value was signed (displayed != signed). Post-fix it must reject.
 const BIG_GAS = '1' + '0'.repeat(300)
 
-export const NEGATIVE_SIGN_CASES = [
+const negativeSignCases = (FROM: string) => [
   {
     name: 'oob_max_items_transfer',
     // Wrong-arg coin.TRANSFER else-branch (items.c:409) at the MAX boundary. Must fail closed.
-    json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${CODE}"}},"signers":[{"pubKey":"${FROM}","clist":[${manyCapsClist()}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
+    json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${code(FROM)}"}},"signers":[{"pubKey":"${FROM}","clist":[${manyCapsClist()}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
     expectReject: true,
   },
   {
     name: 'oob_max_items_rotate',
     // Wrong-arg coin.ROTATE else-branch (items.c:472) at the MAX boundary. Must fail closed.
-    json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${CODE}"}},"signers":[{"pubKey":"${FROM}","clist":[${manyRotateClist()}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
+    json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${code(FROM)}"}},"signers":[{"pubKey":"${FROM}","clist":[${manyRotateClist()}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
     expectReject: true,
   },
   {
     name: 'gas_len_wrap',
     // Oversized gas value: must reject (items_data_too_large) rather than mis-display.
-    json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${CODE}"}},"signers":[{"pubKey":"${FROM}","clist":[{"args":[],"name":"coin.GAS"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":"${BIG_GAS}","chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
+    json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${code(FROM)}"}},"signers":[{"pubKey":"${FROM}","clist":[{"args":[],"name":"coin.GAS"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":"${BIG_GAS}","chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
     expectReject: true,
   },
 ]
@@ -61,8 +65,15 @@ export const NEGATIVE_SIGN_CASES = [
 // Unknown capability with a short string arg: pre-fix the %s render over-read past the token into
 // following JSON (displayed != signed). Post-fix it renders faithfully and the tx signs — this is a
 // POSITIVE case whose snapshot pins the corrected on-screen arg rendering.
-export const UNKNOWN_CAP_RENDER_CASE = {
+const unknownCapRenderCase = (FROM: string) => ({
   name: 'unknown_cap_arg_render',
-  json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${CODE}"}},"signers":[{"pubKey":"${FROM}","clist":[{"args":[],"name":"coin.GAS"},{"args":["AB"],"name":"foo.BAR"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
+  json: `{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":"${code(FROM)}"}},"signers":[{"pubKey":"${FROM}","clist":[{"args":[],"name":"coin.GAS"},{"args":["AB"],"name":"foo.BAR"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"${FROM}"},"nonce":"nonce"}`,
   path: PATH,
-}
+})
+
+export const NEGATIVE_SIGN_CASES = negativeSignCases(DEVICE)
+export const UNKNOWN_CAP_RENDER_CASE = unknownCapRenderCase(DEVICE)
+
+// The v1.3.0 payloads, signed by a key that is not the device's: v1.3.1 refuses each one.
+export const NEGATIVE_SIGN_CASES_V130 = negativeSignCases(V1_3_0_SIGNER)
+export const UNKNOWN_CAP_RENDER_CASE_V130 = unknownCapRenderCase(V1_3_0_SIGNER)

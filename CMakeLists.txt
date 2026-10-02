@@ -153,6 +153,7 @@ file(GLOB_RECURSE LIB_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/parser.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/items.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/items_format.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/app/src/review_lock.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/parser_impl.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/crypto_helper.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/json/json_parser.c

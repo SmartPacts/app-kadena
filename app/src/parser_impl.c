@@ -59,6 +59,7 @@ static parser_error_t parser_readSingleByte(parser_context_t *ctx, uint8_t *byte
 static parser_error_t parser_readBytes(parser_context_t *ctx, uint8_t **bytes, uint16_t len);
 static parser_error_t parser_formatTxTransfer(uint16_t address_len, char *address, chunk_t *chunks, uint8_t tx_type);
 static parser_error_t parser_validate_chunks(chunk_t *chunks);
+static parser_error_t parser_validate_chunk_contents(const chunk_t *chunks, uint8_t tx_type);
 
 tx_json_t *parser_json_obj;
 tx_hash_t *parser_hash_obj;
@@ -94,6 +95,230 @@ tx_json_t *parser_getParserJsonObj() { return parser_json_obj; }
 
 tx_hash_t *parser_getParserHashObj() { return parser_hash_obj; }
 
+// The signer entry the device signs for (see parser_findDeviceSigner) and the number of entries.
+static uint16_t device_signer_token_index = 0;
+static uint16_t signers_count = 0;
+
+#if !defined(LEDGER_SPECIFIC)
+// Host unit tests have no device key: they set the key the parser treats as the device's.
+static char test_device_key_hex[ADDRESS_HEX_LEN] = "1234567890123456789012345678901234567890123456789012345678901234";
+
+void parser_setTestDeviceKeyHex(const char *hex) { snprintf(test_device_key_hex, sizeof(test_device_key_hex), "%s", hex); }
+#endif
+
+// Lowercase hex of the device public key for the current path (hdPath). No user interaction.
+static parser_error_t parser_getDeviceKeyHex(char *out, uint16_t outLen, uint16_t *len) {
+#if defined(LEDGER_SPECIFIC)
+    uint8_t pubkey[PUB_KEY_LENGTH] = {0};
+    uint16_t pubkey_len = 0;
+
+    if (crypto_fillAddress(pubkey, sizeof(pubkey), &pubkey_len) != zxerr_ok) {
+        return parser_unexpected_error;
+    }
+
+    *len = array_to_hexstr(out, outLen, pubkey, PUB_KEY_LENGTH);
+#else
+    *len = snprintf(out, outLen, "%s", test_device_key_hex);
+#endif
+    return parser_ok;
+}
+
+static bool span_has_backslash(const parsed_json_t *json, uint16_t token_index) {
+    const jsmntok_t *token = &json->tokens[token_index];
+    for (int i = token->start; i < token->end; i++) {
+        if (json->buffer[i] == '\\') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool span_equals_ignore_case(const parsed_json_t *json, uint16_t token_index, const char *text, uint16_t len) {
+    const jsmntok_t *token = &json->tokens[token_index];
+    if (token->end - token->start != len) {
+        return false;
+    }
+    for (uint16_t i = 0; i < len; i++) {
+        char a = json->buffer[token->start + i];
+        char b = text[i];
+        if (a >= 'A' && a <= 'Z') {
+            a = (char)(a - 'A' + 'a');
+        }
+        if (b >= 'A' && b <= 'Z') {
+            b = (char)(b - 'A' + 'a');
+        }
+        if (a != b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool same_key_bytes(const parsed_json_t *json, uint16_t a, uint16_t b) {
+    const jsmntok_t *ta = &json->tokens[a];
+    const jsmntok_t *tb = &json->tokens[b];
+    if (ta->end - ta->start != tb->end - tb->start) {
+        return false;
+    }
+    return MEMCMP(json->buffer + ta->start, json->buffer + tb->start, ta->end - ta->start) == 0;
+}
+
+// The device finds an object member by comparing raw key bytes (json_parser.c), but a JSON decoder
+// unescapes a key before it applies its duplicate-key rule. So an escaped spelling of a key
+// ("signers", "name", "meta") would make the device read one member while the chain
+// reads another, hiding a transfer, a rotation or a fee. Refuse any object key that contains a JSON
+// escape, anywhere in the document. A literal duplicate key within one object is also refused: the
+// device takes the first and a last-wins decoder takes the second (which rule a given decoder
+// applies varies between JSON decoders, so either is possible). Values keep their escapes.
+static parser_error_t parser_checkKeyIntegrity(const parsed_json_t *json) {
+    const uint16_t ntok = json->numberOfTokens;
+    for (uint16_t o = 0; o < ntok; o++) {
+        if (json->tokens[o].type != JSMN_OBJECT) {
+            continue;
+        }
+        const int obj_end = json->tokens[o].end;
+        int prev_end = json->tokens[o].start;
+        for (uint16_t i = o + 1; i + 1 < ntok; i++) {
+            const jsmntok_t *key = &json->tokens[i];
+            if (key->start > obj_end) {
+                break;
+            }
+            if (key->start <= prev_end) {
+                continue;  // a token nested inside an earlier member's value, not a direct key
+            }
+            prev_end = json->tokens[i + 1].end;  // this member's value ends here
+            if (span_has_backslash(json, i)) {
+                return parser_unexpected_characters;
+            }
+            // Compare against the earlier direct keys of this same object.
+            int inner_prev = json->tokens[o].start;
+            for (uint16_t j = o + 1; j < i; j++) {
+                if (json->tokens[j].start <= inner_prev) {
+                    continue;
+                }
+                inner_prev = json->tokens[j + 1].end;
+                if (same_key_bytes(json, i, j)) {
+                    return parser_duplicated_field;
+                }
+            }
+        }
+    }
+    return parser_ok;
+}
+
+// Finds the one signer entry the device signs for. Pact keys each signature's scope by the
+// entry's addr, else its pubKey, and a later entry with the same key replaces an earlier one, so
+// the entry to review is the one naming the device key, and it must be the only entry naming it,
+// as pubKey or addr, in any letter case. Its pubKey must be exactly the lowercase hex of the
+// device key. Key names and key values inside signer entries must not use JSON escapes, which
+// could hide a second entry from this raw-byte comparison.
+parser_error_t parser_findDeviceSigner() {
+    const parsed_json_t *json_all = &parser_json_obj->json;
+    char device_hex[ADDRESS_HEX_LEN] = {0};
+    uint16_t device_hex_len = 0;
+    uint16_t signers_token_index = 0;
+    uint16_t count = 0;
+    uint16_t matches = 0;
+    uint16_t found = 0;
+
+    device_signer_token_index = 0;
+    signers_count = 0;
+
+    CHECK_ERROR(parser_checkKeyIntegrity(json_all));
+
+    CHECK_ERROR(parser_getDeviceKeyHex(device_hex, sizeof(device_hex), &device_hex_len));
+    if (device_hex_len != 2 * PUB_KEY_LENGTH) {
+        return parser_unexpected_error;
+    }
+
+    if (object_get_value(json_all, 0, JSON_SIGNERS, &signers_token_index) != parser_ok ||
+        json_all->tokens[signers_token_index].type != JSMN_ARRAY) {
+        return parser_signer_not_found;
+    }
+
+    CHECK_ERROR(array_get_element_count(json_all, signers_token_index, &count));
+
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t entry = 0;
+        uint16_t num_keys = 0;
+        bool names_device = false;
+
+        CHECK_ERROR(array_get_nth_element(json_all, signers_token_index, i, &entry));
+        if (json_all->tokens[entry].type != JSMN_OBJECT) {
+            continue;
+        }
+
+        CHECK_ERROR(object_get_element_count(json_all, entry, &num_keys));
+        for (uint16_t k = 0; k < num_keys; k++) {
+            uint16_t key = 0;
+            CHECK_ERROR(object_get_nth_key(json_all, entry, k, &key));
+            if (span_has_backslash(json_all, key)) {
+                return parser_unexpected_characters;
+            }
+        }
+
+        uint16_t value = 0;
+        if (object_get_value(json_all, entry, JSON_PUBKEY, &value) == parser_ok) {
+            if (span_has_backslash(json_all, value)) {
+                return parser_unexpected_characters;
+            }
+            names_device = names_device || span_equals_ignore_case(json_all, value, device_hex, device_hex_len);
+        }
+        if (object_get_value(json_all, entry, JSON_ADDR, &value) == parser_ok) {
+            if (span_has_backslash(json_all, value)) {
+                return parser_unexpected_characters;
+            }
+            names_device = names_device || span_equals_ignore_case(json_all, value, device_hex, device_hex_len);
+        }
+
+        if (names_device) {
+            matches++;
+            found = entry;
+        }
+    }
+
+    if (matches == 0) {
+        return parser_signer_not_found;
+    }
+    if (matches > 1) {
+        return parser_signer_repeated;
+    }
+
+    uint16_t pubkey_token_index = 0;
+    if (object_get_value(json_all, found, JSON_PUBKEY, &pubkey_token_index) != parser_ok) {
+        return parser_signer_not_found;
+    }
+    const jsmntok_t *pubkey_token = &json_all->tokens[pubkey_token_index];
+    if (pubkey_token->type != JSMN_STRING || pubkey_token->end - pubkey_token->start != device_hex_len ||
+        MEMCMP(json_all->buffer + pubkey_token->start, device_hex, device_hex_len) != 0) {
+        return parser_signer_not_found;
+    }
+
+    // A capability name is compared by raw bytes (parser_getTxName), so an escape in the name of a
+    // capability in the device's own entry would hide, for example, coin.ROTATE. Refuse it.
+    uint16_t clist = 0;
+    if (object_get_value(json_all, found, JSON_CLIST, &clist) == parser_ok && json_all->tokens[clist].type == JSMN_ARRAY) {
+        uint16_t n = 0;
+        CHECK_ERROR(array_get_element_count(json_all, clist, &n));
+        for (uint16_t i = 0; i < n; i++) {
+            uint16_t cap = 0;
+            uint16_t name = 0;
+            CHECK_ERROR(array_get_nth_element(json_all, clist, i, &cap));
+            if (object_get_value(json_all, cap, JSON_NAME, &name) == parser_ok && span_has_backslash(json_all, name)) {
+                return parser_unexpected_characters;
+            }
+        }
+    }
+
+    device_signer_token_index = found;
+    signers_count = count;
+    return parser_ok;
+}
+
+uint16_t parser_getDeviceSignerIndex() { return device_signer_token_index; }
+
+uint16_t parser_getSignersCount() { return signers_count; }
+
 parser_error_t parser_findPubKeyInClist(uint16_t key_token_index) {
     parsed_json_t *json_all = &parser_json_obj->json;
     uint16_t token_index = 0;
@@ -120,15 +345,19 @@ parser_error_t parser_findPubKeyInClist(uint16_t key_token_index) {
             }
             value_token = &(json_all->tokens[token_index]);
             key_token = &(json_all->tokens[key_token_index]);
+            const uint16_t key_len = key_token->end - key_token->start;
+            const uint16_t value_len = value_token->end - value_token->start;
             uint8_t offset = 0;
 
             // Key could possibly be prefixed with "k:"
-            if (CMP_STRING_AND_BUFFER("k:", json_all->buffer + value_token->start, 2)) {
+            if (value_len >= 2 && CMP_STRING_AND_BUFFER("k:", json_all->buffer + value_token->start, 2)) {
                 offset = 2;
             }
 
-            if (MEMCMP(json_all->buffer + key_token->start, json_all->buffer + value_token->start + offset,
-                       key_token->end - key_token->start) == 0) {
+            // Exact match only: an argument that merely starts with the key (the key followed by
+            // more characters) is a different account and must not count as the signer.
+            if (value_len - offset == key_len &&
+                MEMCMP(json_all->buffer + key_token->start, json_all->buffer + value_token->start + offset, key_len) == 0) {
                 return parser_ok;
             }
         }
@@ -238,14 +467,13 @@ parser_error_t parser_getTxName(uint16_t token_index) {
 parser_error_t parser_getValidClist(uint16_t *clist_token_index, uint16_t *num_args) {
     parsed_json_t *json_all = &(parser_json_obj->json);
 
-    CHECK_ERROR(object_get_value(json_all, 0, JSON_SIGNERS, clist_token_index));
-
-    if (!items_isNullField(*clist_token_index)) {
-        CHECK_ERROR(array_get_nth_element(json_all, *clist_token_index, 0, clist_token_index));
-
-        if (object_get_value(json_all, *clist_token_index, JSON_CLIST, clist_token_index) == parser_ok) {
-            if (!items_isNullField(*clist_token_index)) {
-                CHECK_ERROR(array_get_element_count(json_all, *clist_token_index, num_args));
+    // The capability list of the device's own signer entry (parser_findDeviceSigner), not signers[0].
+    if (object_get_value(json_all, device_signer_token_index, JSON_CLIST, clist_token_index) == parser_ok) {
+        if (!items_isNullField(*clist_token_index)) {
+            CHECK_ERROR(array_get_element_count(json_all, *clist_token_index, num_args));
+            // An empty list scopes nothing: Pact reads a missing, null or empty clist alike, as
+            // a signature valid for any capability. Treat it as no clist (Unscoped + WARNING).
+            if (*num_args > 0) {
                 return parser_ok;
             }
         }
@@ -293,21 +521,9 @@ parser_error_t parser_createJsonTemplate(parser_context_t *ctx) {
     }
 
     CHECK_ERROR(parser_validate_chunks(chunks));
+    CHECK_ERROR(parser_validate_chunk_contents(chunks, tx_type));
 
-#if defined(LEDGER_SPECIFIC)
-    uint8_t pubkey[PUB_KEY_LENGTH] = {0};
-    uint16_t pubkey_len = 0;
-
-    if (crypto_fillAddress(pubkey, sizeof(pubkey), &pubkey_len) != zxerr_ok) {
-        return parser_unexpected_error;
-    }
-
-    address_len = array_to_hexstr(address, sizeof(address), pubkey, PUB_KEY_LENGTH);
-#else
-    // Dummy address for cpp_test
-    address_len =
-        snprintf(address, sizeof(address), "%s", "1234567890123456789012345678901234567890123456789012345678901234");
-#endif
+    CHECK_ERROR(parser_getDeviceKeyHex(address, sizeof(address), &address_len));
 
     CHECK_ERROR(parser_formatTxTransfer(address_len, address, chunks, tx_type));
 
@@ -489,6 +705,145 @@ static parser_error_t parser_validate_chunks(chunk_t *chunks) {
     return parser_ok;
 }
 
+static bool is_digit(char c) { return c >= '0' && c <= '9'; }
+
+static bool is_alnum(char c) { return is_digit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+// Number of ASCII digits at the start of v.
+static uint8_t count_digits(const char *v, uint8_t len) {
+    uint8_t n = 0;
+    while (n < len && is_digit(v[n])) {
+        n++;
+    }
+    return n;
+}
+
+static bool all_digits(const char *v, uint8_t len) { return count_digits(v, len) == len; }
+
+// digits ('.' digits)?  -- no sign, no lone or trailing '.'
+static bool is_decimal(const char *v, uint8_t len) {
+    const uint8_t n = count_digits(v, len);
+    if (n == 0) {
+        return false;
+    }
+    if (n == len) {
+        return true;
+    }
+    if (v[n] != '.') {
+        return false;
+    }
+    const uint8_t frac_len = len - n - 1;
+    return frac_len > 0 && all_digits(v + n + 1, frac_len);
+}
+
+// A decimal with an optional exponent: digits ('.' digits)? ([eE] [+-]? digits)?
+static bool is_json_number(const char *v, uint8_t len) {
+    uint8_t e = 0;
+    while (e < len && v[e] != 'e' && v[e] != 'E') {
+        e++;
+    }
+    if (e == len) {
+        return is_decimal(v, len);
+    }
+    const char *exp = v + e + 1;
+    uint8_t exp_len = len - e - 1;
+    if (exp_len > 0 && (exp[0] == '+' || exp[0] == '-')) {
+        exp++;
+        exp_len--;
+    }
+    return is_decimal(v, e) && exp_len > 0 && all_digits(exp, exp_len);
+}
+
+// Characters the Pact lexer accepts in a namespace or module name.
+static bool is_pact_ident(char c) {
+    switch (c) {
+        case '%':
+        case '#':
+        case '+':
+        case '-':
+        case '_':
+        case '&':
+        case '$':
+        case '@':
+        case '<':
+        case '>':
+        case '=':
+        case '?':
+        case '*':
+        case '!':
+        case '|':
+        case '/':
+            return true;
+        default:
+            return is_alnum(c);
+    }
+}
+
+static bool field_allowed(uint8_t field, const char *v, uint8_t len, uint8_t tx_type) {
+    switch (field) {
+        case RECIPIENT_POS:
+            // A public key in lowercase hex: k:ABC... and k:abc... are different accounts.
+            for (uint8_t i = 0; i < len; i++) {
+                if (!is_digit(v[i]) && !(v[i] >= 'a' && v[i] <= 'f')) {
+                    return false;
+                }
+            }
+            return true;
+        case RECIPIENT_CHAIN_POS:
+            // Only a cross-chain transfer pastes the recipient chain into the template.
+            if (tx_type != TX_TYPE_TRANSFER_CROSSCHAIN) {
+                return all_digits(v, len);
+            }
+            return len > 0 && all_digits(v, len);
+        case CHAIN_ID_POS:
+            return len > 0 && all_digits(v, len);
+        case NETWORK_POS:
+            for (uint8_t i = 0; i < len; i++) {
+                if (!is_alnum(v[i]) && v[i] != '-' && v[i] != '_' && v[i] != '.') {
+                    return false;
+                }
+            }
+            return true;
+        case AMOUNT_POS:
+        case GAS_LIMIT_POS:
+        case CREATION_TIME_POS:
+        case TTL_POS:
+            return is_decimal(v, len);
+        case GAS_PRICE_POS:
+            // A JSON number: hosts send exponents here (e.g. 1.0e-6).
+            return is_json_number(v, len);
+        case NAMESPACE_POS:
+        case MODULE_POS:
+            for (uint8_t i = 0; i < len; i++) {
+                if (!is_pact_ident(v[i])) {
+                    return false;
+                }
+            }
+            return true;
+        default:
+            // Nonce: free text inside a JSON string, printable ASCII except '"' and '\'.
+            for (uint8_t i = 0; i < len; i++) {
+                const uint8_t c = (uint8_t)v[i];
+                if (c < 0x20 || c > 0x7E || c == '"' || c == '\\') {
+                    return false;
+                }
+            }
+            return true;
+    }
+}
+
+// The device pastes every field verbatim into the JSON it signs, so each field must be checked
+// against what that position may hold. None of the allowed characters can end a JSON string,
+// start an escape, or add JSON or Pact structure, and every numeric field is a well-formed number.
+static parser_error_t parser_validate_chunk_contents(const chunk_t *chunks, uint8_t tx_type) {
+    for (uint8_t i = 0; i < MAX_FIELDS_IN_INPUT_DATA; i++) {
+        if (!field_allowed(i, chunks[i].data, chunks[i].len, tx_type)) {
+            return parser_unexpected_characters;
+        }
+    }
+    return parser_ok;
+}
+
 const char *parser_getErrorDescription(parser_error_t err) {
     switch (err) {
         case parser_ok:
@@ -544,6 +899,10 @@ const char *parser_getErrorDescription(parser_error_t err) {
             return "Transaction type: Rotate";
         case parser_name_gas:
             return "Transaction type: Gas";
+        case parser_signer_not_found:
+            return "Device key is not a signer";
+        case parser_signer_repeated:
+            return "Device key signs more than once";
 
         default:
             return "Unrecognized error code";

@@ -69,6 +69,8 @@ typedef enum {
     parser_name_tx_transfer_xchain,
     parser_name_rotate,
     parser_name_gas,
+    parser_signer_not_found,  // no signer entry carries the device key
+    parser_signer_repeated,   // more than one signer entry carries the device key
 } parser_error_t;
 
 #ifdef __cplusplus

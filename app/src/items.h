@@ -27,3 +27,12 @@ items_error_t items_initItems();
 items_error_t items_storeItems(tx_type_t tx_type);
 uint16_t items_getTotalItems();
 item_array_t *items_getItemArray();
+bool items_blindSignRequired();
+bool items_amountNotPlain();
+
+/// S12: copy the digest computed while parsing to the slot bound to the review being shown.
+items_error_t items_bindReviewDigest();
+/// S12: the 32-byte digest bound to the shown review (the bytes approval signs).
+items_error_t items_getReviewDigest(uint8_t *out, uint16_t outLen);
+/// S12: forget the bound digest once the review is approved or rejected.
+void items_clearReviewDigest();

@@ -33,6 +33,7 @@
 static items_error_t items_storeSigningTransaction();
 static items_error_t items_storeNetwork();
 static items_error_t items_storeRequiringCapabilities();
+static items_error_t items_storeSigners();
 static items_error_t items_storeKey();
 static items_error_t items_validateSigners();
 static items_error_t items_storeAllTransfers();
@@ -48,6 +49,7 @@ static items_error_t items_storeTxItem(uint16_t transfer_token_index, uint8_t *n
 static items_error_t items_storeTxCrossItem(uint16_t transfer_token_index, uint8_t *num_of_transfers);
 static items_error_t items_storeTxRotateItem(uint16_t transfer_token_index);
 static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t transfer_token_index);
+static items_error_t items_storeRotateWarning();
 
 #define MAX_ITEM_LENGTH_TO_DISPLAY 256
 
@@ -57,10 +59,42 @@ uint8_t hash[BLAKE2B_HASH_SIZE] = {0};
 
 char base64_hash[45];
 
+// Set when the device's signer entry holds coin.ROTATE: signing then needs the Blind signing setting.
+static bool rotate_in_scope = false;
+
+// Set when the device's signer entry holds a capability the device does not fully render (anything
+// but coin.GAS / coin.TRANSFER / coin.TRANSFER_XCHAIN / coin.ROTATE): signing then needs the Blind
+// signing setting, and the review carries a "Capability not verified" warning. This holds for host-
+// built JSON (S10) and for a structured transfer of a token other than coin (S13): the token module's
+// code can use the key while its TRANSFER capability is held, and a look-alike module in another
+// namespace reads the same on screen.
+static bool unverified_cap_in_scope = false;
+
+// Set when a displayed coin.TRANSFER / coin.TRANSFER_XCHAIN amount is not in one of the two accepted
+// forms: a bare JSON number, or an object {"decimal":"<text>"} with that single key (the form
+// @kadena/client emits), where the number or the text is a plain decimal digits('.' digits)? with no
+// leading zero. Anything else (an exponent (S11), a string, {"int":…}, a sign, extra keys) is refused
+// (S14): the screen would show it raw, and the network reads several of those forms as other decimals.
+static bool amount_not_plain = false;
+
+// S12: the digest the device signs. parsed_digest is computed while parsing (blake2b-256 of the JSON
+// the review shows, or the 32 bytes of a hash to sign). When a signing review is shown it is copied
+// to review_digest, which no later parse touches; approval signs exactly review_digest and never
+// re-hashes a buffer that could have changed after the review was built.
+static uint8_t parsed_digest[BLAKE2B_HASH_SIZE];
+static bool parsed_digest_ready = false;
+static uint8_t review_digest[BLAKE2B_HASH_SIZE];
+static bool review_digest_bound = false;
+
 items_error_t items_initItems() {
     MEMZERO(&item_array, sizeof(item_array_t));
 
     item_array.numOfUnknownCapabilities = 1;
+    rotate_in_scope = false;
+    unverified_cap_in_scope = false;
+    amount_not_plain = false;
+    MEMZERO(parsed_digest, sizeof(parsed_digest));
+    parsed_digest_ready = false;
 
     for (uint8_t i = 0; i < MAX_NUMBER_OF_ITEMS; i++) {
         item_array.items[i].can_display = bool_true;
@@ -71,11 +105,101 @@ items_error_t items_initItems() {
 
 item_array_t *items_getItemArray() { return &item_array; }
 
+bool items_blindSignRequired() { return rotate_in_scope || unverified_cap_in_scope; }
+
+bool items_amountNotPlain() { return amount_not_plain; }
+
+items_error_t items_bindReviewDigest() {
+    if (!parsed_digest_ready) {
+        return items_error;
+    }
+    MEMCPY(review_digest, parsed_digest, sizeof(review_digest));
+    review_digest_bound = true;
+    return items_ok;
+}
+
+items_error_t items_getReviewDigest(uint8_t *out, uint16_t outLen) {
+    if (out == NULL || outLen < sizeof(review_digest) || !review_digest_bound) {
+        return items_error;
+    }
+    MEMCPY(out, review_digest, sizeof(review_digest));
+    return items_ok;
+}
+
+void items_clearReviewDigest() {
+    MEMZERO(review_digest, sizeof(review_digest));
+    review_digest_bound = false;
+}
+
+// digits('.' digits)?: no sign, no exponent, no lone or trailing '.', and no leading zero in the
+// integer part (a single 0 before the '.' is fine).
+static bool items_isPlainDecimal(const char *v, uint16_t len) {
+    uint16_t i = 0;
+    while (i < len && v[i] >= '0' && v[i] <= '9') {
+        i++;
+    }
+    if (i == 0 || (i > 1 && v[0] == '0')) {
+        return false;
+    }
+    if (i == len) {
+        return true;
+    }
+    if (v[i] != '.' || i + 1 == len) {
+        return false;
+    }
+    for (i++; i < len; i++) {
+        if (v[i] < '0' || v[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool items_tokenIsPlainDecimal(const parsed_json_t *json_all, const jsmntok_t *token) {
+    return token->end >= token->start &&
+           items_isPlainDecimal(json_all->buffer + token->start, (uint16_t)(token->end - token->start));
+}
+
+// Checks a coin.TRANSFER / coin.TRANSFER_XCHAIN amount (clist arg 2) and flags any form but the two
+// accepted ones. For {"decimal":"<text>"} it points the amount item at the inner text, so the review
+// shows the plain number ("KDA 231"), never the object.
+static void items_checkAmountForm(uint16_t *amount_token_index) {
+    const parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+    const jsmntok_t *token = &json_all->tokens[*amount_token_index];
+    if (token->type == JSMN_PRIMITIVE) {
+        if (!items_tokenIsPlainDecimal(json_all, token)) {
+            amount_not_plain = true;
+        }
+        return;
+    }
+    uint16_t count = 0;
+    uint16_t key_index = 0;
+    uint16_t value_index = 0;
+    if (token->type != JSMN_OBJECT || object_get_element_count(json_all, *amount_token_index, &count) != parser_ok ||
+        count != 1 || object_get_nth_key(json_all, *amount_token_index, 0, &key_index) != parser_ok ||
+        object_get_nth_value(json_all, *amount_token_index, 0, &value_index) != parser_ok) {
+        amount_not_plain = true;
+        return;
+    }
+    const jsmntok_t *key = &json_all->tokens[key_index];
+    const jsmntok_t *value = &json_all->tokens[value_index];
+    const uint16_t key_len = (uint16_t)(key->end - key->start);
+    if (key->type != JSMN_STRING || key_len != strlen("decimal") ||
+        MEMCMP(json_all->buffer + key->start, "decimal", key_len) != 0 || value->type != JSMN_STRING ||
+        !items_tokenIsPlainDecimal(json_all, value)) {
+        amount_not_plain = true;
+        return;
+    }
+    *amount_token_index = value_index;
+}
+
 items_error_t items_storeItems(tx_type_t tx_type) {
     if (tx_type != tx_type_hash) {
         CHECK_ITEMS_ERROR(items_storeSigningTransaction());
 
         CHECK_ITEMS_ERROR(items_storeNetwork());
+
+        CHECK_ITEMS_ERROR(items_storeSigners());
 
         CHECK_ITEMS_ERROR(items_storeRequiringCapabilities());
 
@@ -148,22 +272,28 @@ static items_error_t items_storeRequiringCapabilities() {
     return items_ok;
 }
 
+// "Signers": the number of signer entries, shown when there is more than one.
+static items_error_t items_storeSigners() {
+    if (parser_getSignersCount() > 1) {
+        item_t *item = &item_array.items[item_array.numOfItems];
+        item->key = key_signers;
+        item_array.toString[item_array.numOfItems] = items_signersToDisplayString;
+        INCREMENT_NUM_ITEMS()
+    }
+
+    return items_ok;
+}
+
+// "Of Key": the pubKey of the device's own signer entry (parser_findDeviceSigner), not signers[0].
 static items_error_t items_storeKey() {
     parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
     uint16_t *curr_token_idx = &item_array.items[item_array.numOfItems].json_token_index;
     item_t *item = &item_array.items[item_array.numOfItems];
 
-    PARSER_TO_ITEMS_ERROR(object_get_value(json_all, *curr_token_idx, JSON_SIGNERS, curr_token_idx));
-
-    if (!items_isNullField(*curr_token_idx)) {
-        PARSER_TO_ITEMS_ERROR(array_get_nth_element(json_all, *curr_token_idx, 0, curr_token_idx));
-        PARSER_TO_ITEMS_ERROR(object_get_value(json_all, *curr_token_idx, JSON_PUBKEY, curr_token_idx));
-        if (!items_isNullField(*curr_token_idx)) {
-            item->key = key_of_key;
-            item_array.toString[item_array.numOfItems] = items_stdToDisplayString;
-            INCREMENT_NUM_ITEMS()
-        }
-    }
+    PARSER_TO_ITEMS_ERROR(object_get_value(json_all, parser_getDeviceSignerIndex(), JSON_PUBKEY, curr_token_idx));
+    item->key = key_of_key;
+    item_array.toString[item_array.numOfItems] = items_stdToDisplayString;
+    INCREMENT_NUM_ITEMS()
 
     return items_ok;
 }
@@ -229,6 +359,8 @@ static items_error_t items_storeAllTransfers() {
                     case parser_name_rotate:
                         *curr_token_idx = token_index;
                         CHECK_ITEMS_ERROR(items_storeTxRotateItem(token_index));
+                        // Whatever its arguments: the new owner is never shown.
+                        CHECK_ITEMS_ERROR(items_storeRotateWarning());
                         break;
                     case parser_name_gas:
                         break;
@@ -337,7 +469,11 @@ static items_error_t items_checkTxLengths() {
 static items_error_t items_computeHash(tx_type_t tx_type) {
     if (tx_type == tx_type_hash) {
         tx_hash_t *hash_obj = parser_getParserHashObj();
+        if (hash_obj->hash_len != sizeof(parsed_digest)) {
+            return items_error;
+        }
         base64_encode(base64_hash, 44, (uint8_t *)hash_obj->tx, hash_obj->hash_len);
+        MEMCPY(parsed_digest, hash_obj->tx, sizeof(parsed_digest));
     } else {
         if (blake2b_hash((uint8_t *)parser_getParserJsonObj()->json.buffer, parser_getParserJsonObj()->json.bufferLen,
                          hash) != zxerr_ok) {
@@ -345,7 +481,9 @@ static items_error_t items_computeHash(tx_type_t tx_type) {
         }
 
         base64_encode(base64_hash, 44, hash, sizeof(hash));
+        MEMCPY(parsed_digest, hash, sizeof(parsed_digest));
     }
+    parsed_digest_ready = true;
 
     // Make it base64 URL safe
     for (int i = 0; base64_hash[i] != '\0'; i++) {
@@ -409,6 +547,7 @@ static items_error_t items_storeTxItem(uint16_t transfer_token_index, uint8_t *n
         item = &item_array.items[item_array.numOfItems];
         item->key = key_amount;
         PARSER_TO_ITEMS_ERROR(array_get_nth_element(json_all, token_index, 2, &item->json_token_index));
+        items_checkAmountForm(&item->json_token_index);
         item_array.toString[item_array.numOfItems] = items_amountToDisplayString;
         INCREMENT_NUM_ITEMS()
     } else {
@@ -446,6 +585,7 @@ static items_error_t items_storeTxCrossItem(uint16_t transfer_token_index, uint8
         item = &item_array.items[item_array.numOfItems];
         item->key = key_amount;
         PARSER_TO_ITEMS_ERROR(array_get_nth_element(json_all, token_index, 2, &item->json_token_index));
+        items_checkAmountForm(&item->json_token_index);
         item_array.toString[item_array.numOfItems] = items_amountToDisplayString;
         INCREMENT_NUM_ITEMS()
         item = &item_array.items[item_array.numOfItems];
@@ -481,9 +621,27 @@ static items_error_t items_storeTxRotateItem(uint16_t transfer_token_index) {
     return items_ok;
 }
 
+// coin.ROTATE limits only which account is rotated. The new guard comes from the transaction's
+// code and data, which the review does not show, so rotation is blind signing: it carries this
+// warning and needs the Blind signing setting (parser_validate).
+static items_error_t items_storeRotateWarning() {
+    item_t *item = &item_array.items[item_array.numOfItems];
+
+    rotate_in_scope = true;
+    item->key = key_warning;
+    item_array.toString[item_array.numOfItems] = items_rotateWarningToDisplayString;
+    INCREMENT_NUM_ITEMS()
+
+    return items_ok;
+}
+
 static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t transfer_token_index) {
     item_t *item = &item_array.items[item_array.numOfItems];
     parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+
+    // The device fully renders only coin.GAS / TRANSFER / TRANSFER_XCHAIN / ROTATE; this capability
+    // is none of those, so its effect is not shown. The caller set json_token_index to the cap.
+    const uint16_t cap_token_index = item->json_token_index;
 
     item->key = key_unknown_capability;
     item_array.numOfUnknownCapabilities++;
@@ -494,6 +652,19 @@ static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t trans
         item->can_display = bool_false;
     }
 
+    INCREMENT_NUM_ITEMS()
+
+    // S10: an unverified capability in the device's own entry requires the Blind signing setting and
+    // carries a warning naming it, because a scoped coin.DEBIT (or any other capability) can let
+    // undisplayed code install a TRANSFER and move funds the review never showed. Resolve the name
+    // token now, so the renderer just reads a string token (like items_stdToDisplayString).
+    uint16_t name_token_index = cap_token_index;
+    PARSER_TO_ITEMS_ERROR(object_get_value(json_all, cap_token_index, JSON_NAME, &name_token_index));
+    item_t *warn = &item_array.items[item_array.numOfItems];
+    warn->json_token_index = name_token_index;
+    warn->key = key_warning;
+    unverified_cap_in_scope = true;
+    item_array.toString[item_array.numOfItems] = items_capNotVerifiedToDisplayString;
     INCREMENT_NUM_ITEMS()
 
     return items_ok;

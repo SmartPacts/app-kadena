@@ -20,6 +20,7 @@
 
 #include "common/parser.h"
 #include "crypto.h"
+#include "parser_impl.h"
 
 extern char base64_hash[45];
 
@@ -94,6 +95,37 @@ items_error_t items_txTooLargeToDisplayString(__Z_UNUSED item_t item, char *outV
     }
 
     snprintf(outVal, len, TX_TOO_LARGE_TEXT);
+    return items_ok;
+}
+
+items_error_t items_rotateWarningToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen) {
+    uint16_t len = sizeof(ROTATE_WARNING_TEXT);
+
+    if (len > outValLen) {
+        return items_data_too_large;
+    }
+
+    snprintf(outVal, len, ROTATE_WARNING_TEXT);
+    return items_ok;
+}
+
+// "Capability not verified: <name>" for a capability the device does not fully render (S10).
+// item.json_token_index is the capability name's value token (resolved at store time), and the name
+// has no JSON escape (refused in the device's entry by S8). Bounded against the caller's buffer.
+items_error_t items_capNotVerifiedToDisplayString(item_t item, char *outVal, uint16_t outValLen) {
+    const parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+    const jsmntok_t *token = &(json_all->tokens[item.json_token_index]);
+    const uint16_t name_len = token->end - token->start;
+
+    if (name_len == 0) {
+        return items_length_zero;
+    }
+    // prefix + name + NUL must fit.
+    if (sizeof(CAP_NOT_VERIFIED_PREFIX) + name_len > outValLen) {
+        return items_data_too_large;
+    }
+
+    snprintf(outVal, outValLen, "%s%.*s", CAP_NOT_VERIFIED_PREFIX, name_len, json_all->buffer + token->start);
     return items_ok;
 }
 
@@ -322,6 +354,18 @@ items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, 
         snprintf(outVal + outVal_idx, len_msg + 1, "%s", msg);
     }
 
+    return items_ok;
+}
+
+items_error_t items_signersToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen) {
+    const unsigned int count = parser_getSignersCount();
+
+    // A uint16_t count has at most 5 digits, plus the NUL.
+    if (outValLen < 6) {
+        return items_data_too_large;
+    }
+
+    snprintf(outVal, outValLen, "%u", count);
     return items_ok;
 }
 

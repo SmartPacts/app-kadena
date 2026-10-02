@@ -11,16 +11,18 @@ This is the maintained continuation of the Kadena Ledger app, originally develop
 upstream repository is no longer maintained, and its last release (v1.2.0) targets Ledger
 API_LEVEL 24, which current Nano S+ firmware (OS 1.6.x = API_LEVEL 26) refuses to install.
 
-This continuation (current release: v1.3.0):
+This continuation (current release: v1.3.1):
 
 - rebuilds the app against the current Ledger SDK (API_LEVEL 26) so it installs on today's
   firmware, for all five supported devices;
 - includes memory-safety hardening in the transaction-display renderers and the JSON parser;
-- v1.3.0 adds a whole-app security review (not only a diff review) and fixes three memory-safety
-  defects it found: a legacy HD-path length overflow, a transfer-template buffer capacity error,
-  and a parser item-array out-of-bounds write. There is no APDU / wire-protocol change. Details are
-  in [CHANGELOG.md](CHANGELOG.md);
-- keeps the full Zemu test matrix green across all five device targets (240 tests in v1.3.0);
+- v1.3.1 is a security patch. The device now reviews the signer entry of its own key, clear-signs
+  only plain KDA gas and transfer capabilities and asks for the Blind signing setting for anything
+  else, refuses malformed transfer fields, escaped or repeated JSON keys and amounts that are not
+  plain numbers, and refuses commands while a review is waiting for approval. Anything other than a
+  plain KDA transfer therefore needs Blind signing switched on in the app's settings. Details are in
+  [CHANGELOG.md](CHANGELOG.md);
+- keeps the full Zemu test matrix green across all five device targets;
 - is maintained by [Smart Pacts](https://smartpacts.io), with the goal of returning the app to
   official availability through the Ledger app store.
 
@@ -58,11 +60,11 @@ chmod +x ./installer_nanos_plus.sh
 
 This requires Python 3 with `ledgerblue` installed. **Verify the application hash your device
 displays during installation against the value published in the release notes** — that comparison,
-not the checksum of the download, is what proves which binary your device is running. For v1.3.0
+not the checksum of the download, is what proves which binary your device is running. For v1.3.1
 on the Nano S+ (target `nanos2`) the expected hash is:
 
 ```
-068f376be6115e1769952fabb61020ae5070867c9b2299c259f6947c5b5ce1db
+726078b6269fdb4ef9a70e28c66d7a00ef9f94a0f4a5c7adac11f95fc3cd814a
 ```
 
 Kadena is currently not offered in Ledger's My Ledger catalog (as of September 2026). So on the

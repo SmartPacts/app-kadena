@@ -78,6 +78,10 @@ parser_error_t parser_parse(parser_context_t *ctx, const uint8_t *data, size_t d
     }
 
     ITEMS_TO_PARSER_ERROR(items_initItems())
+    if (tx_type != tx_type_hash) {
+        // Review the signer entry of the device's own key, found before any item is stored.
+        CHECK_ERROR(parser_findDeviceSigner())
+    }
     ITEMS_TO_PARSER_ERROR(items_storeItems(tx_type))
     return parser_ok;
 }
@@ -94,6 +98,20 @@ parser_error_t parser_validate(parser_context_t *ctx) {
         uint8_t pageCount = 0;
         CHECK_ERROR(parser_getItem(ctx, idx, tmpKey, sizeof(tmpKey), tmpVal, sizeof(tmpVal), 0, &pageCount))
     }
+
+    // A displayed transfer amount must be a bare plain decimal (S11, S14): an exponent, a string, an
+    // object or a sign is shown raw and can read as another decimal on the network. Refuse it before
+    // any screen.
+    if (items_amountNotPlain()) {
+        return parser_unexpected_characters;
+    }
+
+    // coin.ROTATE, or any capability the device does not fully render, lets code and data the review
+    // does not show move funds: sign it only with the Blind signing setting on (as a hash).
+    if (items_blindSignRequired() && !app_mode_blindsign()) {
+        return parser_blindsign_mode_required;
+    }
+
     return parser_ok;
 }
 
@@ -224,6 +242,9 @@ static parser_error_t parser_getItemKey(uint8_t displayIdx, char *outKey, uint16
             break;
         case key_sign_for_address:
             strncpy(outKey, "Sign for Address", outKeyLen);
+            break;
+        case key_signers:
+            strncpy(outKey, "Signers", outKeyLen);
             break;
         default:
             break;
