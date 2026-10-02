@@ -150,9 +150,10 @@ tooling point at an older builder image and are not used for releases or CI.
     yarn test
     ```
 
-    The suite is 4 files, 240 tests (5 models). CI runs exactly these steps on every push as the
+    CI runs these steps on every push as the
     `Functional tests (Zemu, five device models)` job in `.github/workflows/reusable_build.yml`,
-    against the binaries produced by Ledger's reusable build job in the same run. Failing
+    against binaries it builds with the same pinned builder image as the releases. Ledger's
+    reusable build job in that workflow follows the latest SDK separately. Failing
     snapshots are uploaded as the `snapshots-tmp` artifact.
 
     To run a single file: `yarn jest tests/standard.test.ts`.

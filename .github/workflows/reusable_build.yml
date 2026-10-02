@@ -19,29 +19,47 @@ jobs:
 
   zemu_tests:
     name: Functional tests (Zemu, five device models)
-    needs: build_application
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [standard, transactions, legacy, negative, security]
+        concurrency: [2]
+        include:
+          # This suite drives the emulator's own API while a review is pending, so
+          # it runs one device model at a time.
+          - suite: review_lock
+            concurrency: 1
+    env:
+      # The releases are built with this image (API level 26). Ledger's reusable
+      # build above follows the latest SDK, which the emulator image used by the
+      # Zemu suite may not support yet, so the suite tests the binaries we ship.
+      BUILDER_IMAGE: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:036d9fd1a264a068ea20f2d0edc962ecdbf1bf5861ef75215924abd77f93bf29
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Download the binaries built above
-        uses: actions/download-artifact@v7
         with:
-          name: compiled_app_binaries
-          path: app/output/ci
+          submodules: recursive
 
-      - name: Place the binaries where the Zemu suite expects them
+      - name: Build the five release binaries with the pinned builder image
         run: |
           set -eu
-          cd app/output
-          cp ci/nanos2/bin/app.elf app_s2.elf
-          cp ci/nanox/bin/app.elf app_x.elf
-          cp ci/stax/bin/app.elf app_stax.elf
-          cp ci/flex/bin/app.elf app_flex.elf
-          cp ci/apex_p/bin/app.elf app_apex_p.elf
-          ls -l app_*.elf
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/app" -w /app "$BUILDER_IMAGE" bash -c '
+            set -eu
+            git config --global --add safe.directory "*"
+            for sdk in NANOSP NANOX STAX FLEX APEX_P; do
+              eval "BOLOS_SDK=\$${sdk}_SDK"
+              make -C app -j2 BOLOS_SDK="$BOLOS_SDK" PRODUCTION_BUILD=1 > "/tmp/build_$sdk.log" 2>&1 || { tail -40 "/tmp/build_$sdk.log"; exit 1; }
+            done'
+          mkdir -p app/output
+          cp app/build/nanos2/bin/app.elf app/output/app_s2.elf
+          cp app/build/nanox/bin/app.elf app/output/app_x.elf
+          cp app/build/stax/bin/app.elf app/output/app_stax.elf
+          cp app/build/flex/bin/app.elf app/output/app_flex.elf
+          cp app/build/apex_p/bin/app.elf app/output/app_apex_p.elf
+          ls -l app/output/app_*.elf
+          cat app/build/nanos2/bin/app.sha256
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -50,16 +68,18 @@ jobs:
 
       - name: Install the test suite
         working-directory: tests_zemu
-        run: yarn install --frozen-lockfile
+        # One download at a time: yarn 1 intermittently corrupts a tarball when it
+        # extracts several in parallel.
+        run: yarn install --frozen-lockfile --network-concurrency 1
 
-      - name: Run the Zemu suite
+      - name: Run the Zemu suite (${{ matrix.suite }})
         working-directory: tests_zemu
-        run: yarn test
+        run: yarn clean && yarn jest "tests/${{ matrix.suite }}.test.ts" --maxConcurrency ${{ matrix.concurrency }}
 
       - name: Upload failing snapshots
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: snapshots-tmp
+          name: snapshots-tmp-${{ matrix.suite }}
           path: tests_zemu/snapshots-tmp/
           if-no-files-found: ignore
