@@ -1,0 +1,32 @@
+[package]
+name = "kadena"
+version = "2.0.0"
+authors = ["Smart Pacts"]
+edition = "2021"
+license = "Apache-2.0"
+description = "Kadena app for Ledger devices"
+
+[dependencies]
+ledger_device_sdk = { version = "=1.37.0", features = ["io_new", "sys"] }
+kadena-core = { path = "kadena-core" }
+
+[features]
+default = ["ledger_device_sdk/nano_nbgl"]
+debug = ["ledger_device_sdk/debug"]
+# Heap measurement build (never shipped): INS 0xFE answers the smallest free
+# heap block seen during reviews.
+heap-probe = []
+
+[package.metadata.ledger]
+curve = ["ed25519"]
+flags = "0"
+path = ["44'/626'"]
+name = "Kadena"
+nanox = { icon = "icons/nanox_icon.gif" }
+nanosplus = { icon = "icons/nanox_icon.gif" }
+stax = { icon = "icons/stax_icon.gif" }
+flex = { icon = "icons/flex_icon.gif" }
+apex_p = { icon = "icons/apex_p_icon.png" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("apex_p", "stax", "flex", "nanox", "nanosplus"))'] }

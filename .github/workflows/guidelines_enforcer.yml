@@ -1,0 +1,34 @@
+name: Ensure compliance with Ledger guidelines
+
+# This workflow is mandatory in all applications
+# It calls a reusable workflow guidelines_enforcer developed by Ledger's internal developer team.
+# The successful completion of the reusable workflow is a mandatory step for an app to be available on the Ledger
+# application store.
+#
+# More information on the guidelines can be found in the repository:
+# LedgerHQ/ledger-app-workflows/
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - master
+      - dev
+
+jobs:
+  guidelines_enforcer:
+    name: Call Ledger guidelines_enforcer
+    # Ledger's reusable enforcer resolves the calling repository through the
+    # public GitHub API, so in a private copy of this repository every run dies
+    # with "caller_repository=... not found". It cannot succeed there at any
+    # configuration. The public repository is the one that
+    # gates store submission, and that is where this must stay green.
+    #
+    # Written as `!private` rather than an explicit repo name so it fails toward
+    # RUNNING: a typo or a rename can never silently disable this mandatory
+    # check on the public repository.
+    if: ${{ !github.event.repository.private }}
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_guidelines_enforcer.yml@db5fd3d8e4fe724ccc4617709c9e245976ee8280

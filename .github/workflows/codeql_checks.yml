@@ -1,0 +1,49 @@
+name: CodeQL
+
+# Static analysis of the Rust sources with GitHub CodeQL (Rust extractor, build
+# mode "none"). Ledger's reusable CodeQL workflow
+# (ledger-app-workflows/reusable_codeql_checks.yml at db5fd3d8e4fe724ccc4617709c9e245976ee8280)
+# analyses C/C++ only (language "cpp", built with make and BOLOS_SDK), so it
+# cannot build this Rust app; github/codeql-action is called directly instead.
+#
+# CodeQL needs GitHub Advanced Security on a private repository, so the job runs
+# only where the repository is public (the repository that gates the release).
+# Written as `!private` so that it fails toward RUNNING.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+      - develop
+  pull_request:
+    paths-ignore:
+      - '.github/workflows/*.yml'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+jobs:
+  analyse:
+    name: CodeQL analysis (Rust)
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+      # github/codeql-action v4.38.2
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2
+        with:
+          languages: rust
+          build-mode: none
+      - name: Analyse
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2
+        with:
+          category: /language:rust

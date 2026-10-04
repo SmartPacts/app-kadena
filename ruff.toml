@@ -1,0 +1,12 @@
+target-version = "py311"
+line-length = 130
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "RUF",  # ruff-native rules
+]

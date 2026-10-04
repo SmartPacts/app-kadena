@@ -1,0 +1,13 @@
+Kadena app for Ledger devices
+Copyright 2026 Smart Pacts
+
+This product is a Rust implementation of the Kadena Ledger application. Its
+behaviour, command protocol and review screens follow the C implementation
+developed by Zondax AG (https://zondax.ch), licensed under the Apache License,
+Version 2.0, of which this repository is the maintained continuation.
+
+The original Kadena Ledger application and its command protocol (the legacy
+command family) were developed by Obsidian Systems LLC, licensed under the
+Apache License, Version 2.0.
+
+The JSON tokenizer is a port of jsmn by Serge Zaitsev (MIT License).

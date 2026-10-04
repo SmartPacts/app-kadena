@@ -1,0 +1,43 @@
+name: Rust checks
+
+# Formatting, clippy (no warnings) on every device target, and the host test
+# suite of the protocol crate, all in the pinned dev-tools image.
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: fmt, clippy, host tests
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:1f93ba59ee02576f336653c712276f006d4d81f4e355b023489bb7b5bdcf390d
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format
+        run: |
+          cargo fmt --check
+          cargo fmt --check --manifest-path kadena-core/Cargo.toml
+      - name: Clippy (all devices)
+        run: |
+          for d in nanox nanosplus stax flex apex_p; do
+            cargo clippy --target $d -- -D warnings
+          done
+      - name: Host tests (protocol crate)
+        # Run outside the app directory so the device build settings in
+        # .cargo/config.toml do not apply to the host build.
+        run: |
+          cd /tmp
+          cargo +nightly-2025-12-05 test --manifest-path "$GITHUB_WORKSPACE/kadena-core/Cargo.toml"
+          cargo +nightly-2025-12-05 clippy --all-targets --manifest-path "$GITHUB_WORKSPACE/kadena-core/Cargo.toml" -- -D warnings
+
+  lint:
+    name: Ledger lint
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_lint.yml@db5fd3d8e4fe724ccc4617709c9e245976ee8280
+    with:
+      source: './src'
