@@ -2,7 +2,7 @@
 
 v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.37.0), NBGL on all five
 devices (Nano S+, Nano X, Stax, Flex, Apex P). This document describes v2.0.0 only; the C app (v1.3.x) is on the
-`main` branch.
+`c-v1.3` branch.
 
 ## Scope and method
 
