@@ -11,7 +11,7 @@ This is the maintained continuation of the Kadena Ledger app, originally develop
 upstream repository is no longer maintained, and its last release (v1.2.0) targets Ledger
 API_LEVEL 24, which current Nano S+ firmware (OS 1.6.x = API_LEVEL 26) refuses to install.
 
-This continuation (current release: v1.3.2):
+This continuation (current release: v1.3.3):
 
 - rebuilds the app against the current Ledger SDK (API_LEVEL 26) so it installs on today's
   firmware, for all five supported devices;
@@ -28,6 +28,7 @@ This continuation (current release: v1.3.2):
   invisible characters shown as `\xNN`, at most 12 fractional digits in a coin amount, and
   refusal of `verifiers` and of non-integer gas fields. The `meta` keys are accepted in any order,
   so a plain coin transfer built with `@kadena/client` is clear-signed;
+- v1.3.3 fixes three static-analysis findings, with no functional change;
 - keeps the full Zemu test matrix green across all five device targets;
 - is maintained by [Smart Pacts](https://smartpacts.io), with the goal of returning the app to
   official availability through the Ledger app store.
@@ -64,11 +65,11 @@ chmod +x ./installer_nanos_plus.sh
 ```
 
 This requires Python 3 with `ledgerblue` installed. Verify the application hash your device
-displays during installation against the value in the release notes. For v1.3.2 on the Nano S+
+displays during installation against the value in the release notes. For v1.3.3 on the Nano S+
 (target `nanos2`) the expected hash is:
 
 ```
-0f6f62ceb5f9b841fbd1b2253a9d14c221000d8da2aeb733c4d70ee30888ccc6
+5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4
 ```
 
 ## Troubleshooting / Support

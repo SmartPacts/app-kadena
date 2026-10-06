@@ -245,15 +245,18 @@ On Stax, Flex and Apex P a transfer's or an unknown capability's title can show 
 only transfer titled "Transfer 2"), because the number follows the order in which the screen
 library asks for pages; only the title is affected, never the values shown under it.
 
-### Deterministic device hashes (v1.3.2)
+### Deterministic device hashes (v1.3.3)
+
+v1.3.3 changes no behaviour: it fixes three static-analysis findings (see CHANGELOG.md) and the
+version page. Its hashes replace those of v1.3.2, which remain in CHANGELOG.md.
 
 | Target | Application hash |
 |---|---|
-| nanos2 | `0f6f62ceb5f9b841fbd1b2253a9d14c221000d8da2aeb733c4d70ee30888ccc6` |
-| nanox | `61184da40282cc0843cad4b626e73a6c437531285932407c55e3824527d398c0` |
-| stax | `895bd8e3989ac5d4d4ef5cf50d395918499b70155816b21fbfc36c60e9f37441` |
-| flex | `e34526905e8bd26e50f915113876d1d5931c088a8894915586c1aa605c43d89a` |
-| apex_p | `aec869f487aa033d670fde696b254ab640cd68a8233e0cbd01ec5ef1fe1218b8` |
+| nanos2 | `5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4` |
+| nanox | `49ff0568570a03e6fbb944cb689ada76d1248f6c585dc0b00a396b2a97d2ec6f` |
+| stax | `53117d4b9e0fd38e3bfb0fd2cafbee56c7dac1b4611eb41ed42f94375379fadb` |
+| flex | `599f7494a233b33a21a1bd4eeb66861c7adbde508d62aef057d3fa5aa95900ec` |
+| apex_p | `c81f0c6b8d07248ce20860ab67edcbf8f1b3cf0a87f8263f1e7ae1812750ae4d` |
 
 ## Note on submission audit
 

@@ -2,6 +2,36 @@
 
 All notable changes to the Kadena Ledger app (this maintained continuation) are documented here.
 
+## [1.3.3] — 2026-10-06
+
+Static-analysis fixes, no functional change. Clang 21's analyser and clang-tidy reported three
+findings in the 1.3.2 code; none is reachable by any input, and the device accepts, refuses and
+shows exactly what 1.3.2 does.
+
+### Fixed
+
+- The JSON reader refuses an empty buffer before scanning it, instead of testing the pointer only
+  inside the NUL check. The caller already refuses an empty buffer first (`parser_init_context`),
+  so no input reaches the new branch; the analyser could not see that and reported a null
+  dereference in the trailing-bytes check.
+- Two integer literals in the `meta` key check are written `1U` instead of `1u`.
+- The version page reads 1.3.3.
+
+### Testing
+
+- The full unit suite and the full Zemu matrix on all five models pass unchanged, except the
+  snapshots of the version page, which now show 1.3.3.
+
+### Device hashes (deterministic)
+
+| Target | Application hash |
+|---|---|
+| nanos2 (Nano S+) | `5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4` |
+| nanox | `49ff0568570a03e6fbb944cb689ada76d1248f6c585dc0b00a396b2a97d2ec6f` |
+| stax | `53117d4b9e0fd38e3bfb0fd2cafbee56c7dac1b4611eb41ed42f94375379fadb` |
+| flex | `599f7494a233b33a21a1bd4eeb66861c7adbde508d62aef057d3fa5aa95900ec` |
+| apex_p | `c81f0c6b8d07248ce20860ab67edcbf8f1b3cf0a87f8263f1e7ae1812750ae4d` |
+
 ## [1.3.2] — 2026-10-04
 
 Security patch. It closes the signing-integrity gaps that v1.3.1 left for a later release: how a

@@ -67,9 +67,14 @@ tx_hash_t *parser_hash_obj;
 parser_error_t _read_json_tx(parser_context_t *c) {
     parser_json_obj = c->json;
 
+    // parser_init_context never leaves an empty buffer here; refuse one anyway.
+    if (c->buffer == NULL || c->bufferLen == 0) {
+        return parser_no_data;
+    }
+
     // Every signed byte must belong to the one JSON value that is reviewed. The tokenizer stops at a
     // NUL, so a NUL anywhere is refused first.
-    if (c->buffer != NULL && memchr(c->buffer, '\0', c->bufferLen) != NULL) {
+    if (memchr(c->buffer, '\0', c->bufferLen) != NULL) {
         return parser_unexpected_characters;
     }
 
@@ -451,10 +456,10 @@ parser_error_t parser_validateMetaField() {
         while (k < array_length(keywords) && strcmp((const char *)PIC(keywords[k]), meta_curr_key) != 0) {
             k++;
         }
-        if (k == array_length(keywords) || (present & (1u << k)) != 0) {
+        if (k == array_length(keywords) || (present & (1U << k)) != 0) {
             return parser_invalid_meta_field;
         }
-        present |= (uint8_t)(1u << k);
+        present |= (uint8_t)(1U << k);
 
         MEMZERO(meta_curr_key, sizeof(meta_curr_key));
     }
