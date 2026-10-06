@@ -9,6 +9,12 @@ interface on every device. The C implementation (v1.3.x) is on the `c-v1.3` bran
 
 The app icon is now the Kadena Community Edition mark.
 
+### Build
+
+- Builds no longer embed the build directory (Cargo `trim-paths`), so the same source gives the same
+  binary from any directory. The device hashes change with this; the release build's hashes will be
+  listed at release.
+
 ### Compatibility
 
 - Same commands, same responses: both command families (0x20–0x24 and the legacy 0x00–0x04, 0x10)

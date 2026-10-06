@@ -7,7 +7,11 @@ target = "apex_p"
 [profile.release]
 opt-level = 'z'
 lto = true
+# No build-directory paths in the binary (panic locations): the same source gives the same bytes
+# from any directory. Without this the Nano X build differed between CI and a local build.
+trim-paths = "all"
 
 [unstable]
+trim-paths = true
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
