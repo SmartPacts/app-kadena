@@ -6,13 +6,13 @@ Ledger's Rust SDK.
 
 > **Release candidate, published for review.** Version 2.0.0 is not released: there are no binaries to
 > install and it has not had the third-party audit Ledger requires. The app to install today is the C
-> implementation, v1.3.2: see the [release page](https://github.com/SmartPacts/app-kadena/releases); its
+> implementation, v1.3.3: see the [release page](https://github.com/SmartPacts/app-kadena/releases); its
 > source is on the [`c-v1.3`](https://github.com/SmartPacts/app-kadena/tree/c-v1.3) branch.
 
 ## About this repository
 
 This is the maintained continuation of the Kadena Ledger app. Version 2.0.0 is a Rust rewrite of the C
-implementation (by [Zondax](https://www.zondax.ch), then this continuation up to v1.3.2; it is on the `c-v1.3` branch), which in turn kept
+implementation (by [Zondax](https://www.zondax.ch), then this continuation up to v1.3.3; it is on the `c-v1.3` branch), which in turn kept
 the command protocol of the original app by Obsidian Systems. See [NOTICE](NOTICE). It is maintained by
 [Smart Pacts](https://smartpacts.io), with the goal of returning the app to the Ledger app store.
 
@@ -33,7 +33,7 @@ What changes is listed plainly under [Differences from the C implementation](#di
 
 *Once the app is approved by Ledger, it will be available in their app store (Ledger Live).*
 
-Kadena is currently not offered in Ledger's catalog. Released versions up to v1.3.2 are the
+Kadena is currently not offered in Ledger's catalog. Released versions up to v1.3.3 are the
 C implementation; see the [release page](https://github.com/SmartPacts/app-kadena/releases) and the notes
 there for sideloading on a Nano S+. A retail Nano X refuses sideloaded apps. The
 first-generation Nano S is not supported.
