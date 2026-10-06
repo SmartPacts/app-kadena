@@ -40,7 +40,7 @@ The general structure of commands and responses is as follows:
 | 0x6F01      | Sign / verify error     |
 | 0x9000      | Success                 |
 
-### Signing policy (v1.3.1)
+### Signing policy (v1.3.2)
 
 The device builds or displays the transaction it signs, so it enforces which transactions it will
 sign. For every JSON-signing command (INS 0x22 and legacy INS 0x03) and every structured-transfer
@@ -55,6 +55,22 @@ command (INS 0x24 and legacy INS 0x10):
   shows `Signers: N`.
 - A `signers` entry whose capability list is missing, `null`, or empty (`[]`, any whitespace) is
   unscoped: the review shows the `Unscoped Signer` item and the unsafe-transaction WARNING.
+- A JSON transaction whose signature no capability list on screen bounds is blind signing: an
+  unscoped entry (the unsafe-transaction WARNING), a value too large to show (the "too large to
+  display" WARNING), or a `meta` the device does not recognise (the `CAUTION` item). The device
+  recognises `meta` when its keys are `creationTime`, `ttl`, `gasLimit`, `chainId`, `gasPrice` and
+  optionally `sender`, in any order, each once, and no other key; a set made of the first one to
+  four of those names in that list (or none), in any order, is refused (`Unrecognized error code`;
+  bare on 0x03), and any other set shows the `CAUTION`. Such a transaction requires the *Blind
+  signing* setting: with it off the command is refused with `0x6984` (`Blind signing mode
+  required`, after the blind-signing screen, on 0x03 too); with it on the review shows the same items
+  as before, opened by the blind-signing warning and closed by the accept-risk approval.
+- On Stax, Flex and Apex P the review shows every page of every item as one pair and counts the
+  pairs, and then its screens (a first page, the pair screens, a last page), in 8 bits. A review of
+  more than 253 pairs (at the device's value page size: 159, 161 and 143 characters) is refused with
+  `0x6984` (`Value out of range`; bare on 0x03), whatever the settings; on a device, expert mode adds two
+  pairs (the transaction hash and the signing address). The
+  Nano review shows one item at a time and has no such limit.
 - A capability argument matches the signer key only when, after an optional `k:` prefix, it equals
   the key exactly (no prefix match).
 - When the reviewed entry holds `coin.ROTATE`, the review shows a warning that the account's new
@@ -88,6 +104,19 @@ command (INS 0x24 and legacy INS 0x10):
   Anything else (an exponent, a string, `{"int":…}`, other or extra keys, a number or object as the
   value, an escape or a space in the string, a sign, a leading or trailing dot) is refused with
   `0x6984` (`Unexpected characters`; bare on 0x03).
+- That number has at most 12 fractional digits (coin's precision), in both forms. More is refused
+  with `0x6984` (`Unexpected characters`; bare on 0x03). The network rounds a longer JSON number,
+  so it would not be the amount shown.
+- In a recognised `meta`, `gasLimit`, `ttl` and `creationTime`, when present, must be plain digits
+  (the network reads them as integers): otherwise `0x6984` (`Unexpected characters`; bare on 0x03).
+- A command with a `verifiers` field (Pact 5 signature verifiers, which can grant capabilities the
+  review cannot show) is refused with `0x6984` (`Unexpected value`; bare on 0x03).
+- The transaction is one JSON value: a NUL byte anywhere is refused with `0x6984` (`Unexpected
+  characters`), and anything but whitespace after the top-level value with `0x6984` (`Unexpected
+  unparsed bytes`); bare on 0x03. Every signed byte is a byte that was parsed and reviewed.
+- Every byte of a displayed value outside printable ASCII (0x20-0x7E) is shown as `\xNN`
+  (uppercase hex), on every device. Account names may contain characters a font draws as nothing
+  (C1 controls, NBSP, the soft hyphen). The signed bytes are unchanged.
 - No JSON object key may contain an escape (`\`), anywhere in the document; no capability name in
   the reviewed signer entry may contain an escape; and no key may appear twice (byte for byte)
   within one object. Otherwise the command is refused with `0x6984` (`Unexpected characters`, or
@@ -95,11 +124,35 @@ command (INS 0x24 and legacy INS 0x10):
   their escapes.
 
 For the structured-transfer commands the device also checks every field against the content its
-position allows before building the JSON, and refuses a violation with `0x6984` (`Unexpected
+position allows (before building the JSON for the recipient, chain ids and the amount's fraction;
+the gas limit, creation time and TTL are checked as integers on the built `meta`, S22), and refuses a violation with `0x6984` (`Unexpected
 characters`; a bare `0x6984` on legacy 0x10): lowercase-hex recipient; digit-only chain ids; a
-decimal (`digits (. digits)?`) amount, gas limit, creation time and TTL; a JSON number (an optional
-exponent) gas price; Pact identifier characters for namespace and module; letters, digits and
-`-_.` for the network; and printable ASCII without `"` or `\` for the nonce.
+digit-only gas limit, creation time and TTL (they become the `meta` integers above); an amount with
+a fractional part
+(`digits . digits`: the amount is pasted into the Pact code, where an integer is not a decimal); a
+JSON number (an optional exponent) gas price; Pact identifier characters for namespace and module;
+letters, digits and `-_.` for the network; and printable ASCII without `"` or `\` for the nonce. A
+`coin` transfer's amount then follows the amount rules above (no leading zero, at most 12
+fractional digits).
+
+#### Command streams
+
+The signing commands that take several APDUs (INS 0x22, 0x23, 0x24 and legacy 0x03, 0x04, 0x10)
+share one stream:
+
+- A first chunk of 0x22, 0x23 or 0x24 (`P1 = 0x00`) closes any stream in progress, of either
+  family, and opens a stream for its INS.
+- A 0x22/0x23/0x24 chunk with `P1 = 0x01` or `0x02` is refused with `0x6987` unless a stream of the
+  same INS is open.
+- Every chunk of a stream must carry the INS of its first chunk. A signing APDU with another INS
+  while a stream is open (a different modern INS, a legacy APDU during a modern stream, a modern
+  APDU during a legacy stream, or another legacy command during a legacy stream) is refused with
+  `0x6987` and closes the open stream. So bytes sent as one command are never parsed and signed as
+  another (for example a JSON transaction finished as a hash).
+- The derivation path that signs is the one the signing command gave (the first packet of 0x22,
+  0x23, 0x24 and 0x10; the path after the payload on 0x03 and 0x04). An address command (0x21,
+  legacy 0x01 or 0x02) sent between the chunks does not change it. A 0x21 closes an open stream of
+  0x22, 0x23 or 0x24 (as before); the legacy address commands close none.
 
 ---
 
@@ -152,7 +205,7 @@ See [Legacy Command definition](#legacy-command-definition) for more details.
 
 | Field      | Type     | Content          | Note                            |
 | ---------- | -------- | ---------------- | ------------------------------- |
-| TEST       | byte (1) | Test Mode        | 0xFF means test mode is enabled |
+| TEST       | byte (1) | Test Mode        | 0x00; 0x01 in a test build      |
 | MAJOR      | byte (2) | Version Major    | 0..65535                        |
 | MINOR      | byte (2) | Version Minor    | 0..65535                        |
 | PATCH      | byte (2) | Version Patch    | 0..65535                        |
@@ -327,7 +380,7 @@ All other packets/chunks contain data chunks that are described below
 | ttl_len             | byte (1)                    | TTL Length                  |                     |
 | ttl                 | byte (ttl_len)              | TTL                         | (0..20)             |
 
-Each field is also validated by content (see **Signing policy (v1.3.1)**): the recipient is
+Each field is also validated by content (see **Signing policy (v1.3.2)**): the recipient is
 lowercase hex, numeric fields are well-formed numbers, and no field may contain a quote, backslash
 or other character that would change the structure of the signed JSON.
 
@@ -466,7 +519,7 @@ Sign a Transaction in JSON format encoded in hexadecimal string (utf8), using th
 
 ### BCOMP_SIGN_TX_HASH
 
-Sign a transaction hash using the key for the specified derivation path. Expert Mode must be enabled on the Ledger app.
+Sign a transaction hash using the key for the specified derivation path. The Blind signing setting must be enabled on the Ledger app.
 
 #### Command
 
@@ -548,7 +601,7 @@ Builds a transfer transaction using the input data, and provides a signature for
 | ttl_len             | byte (1)                    | TTL Length                  |                     |
 | ttl                 | byte (ttl_len)              | TTL                         | (0..20)             |
 
-Each field is also validated by content (see **Signing policy (v1.3.1)**): the recipient is
+Each field is also validated by content (see **Signing policy (v1.3.2)**): the recipient is
 lowercase hex, numeric fields are well-formed numbers, and no field may contain a quote, backslash
 or other character that would change the structure of the signed JSON.
 

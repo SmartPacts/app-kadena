@@ -10,31 +10,42 @@ export const APDU_TEST_CASES = [
     name: 'test_apdu_legacy_blob_204',
     json: '{"networkId":"m","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","clist":[{"args":["1","2",0],"name":"coin.TRANSFER"}]}],"meta":{"ttl":0,"gasLimit":0,"gasPrice":0}}',
     path: PATH,
+    // The shortened `meta` (ttl, gasLimit, gasPrice) is not recognised: Blind signing needed.
+    blind: true,
   },
   {
     name: 'test_apdu_legacy_blob_205',
     json: '{"networkId":"m0","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","clist":[{"args":["1","2",0],"name":"coin.TRANSFER"}]}],"meta":{"ttl":0,"gasLimit":0,"gasPrice":0}}',
     path: PATH,
+    // The shortened `meta` (ttl, gasLimit, gasPrice) is not recognised: Blind signing needed.
+    blind: true,
   },
   {
     name: 'test_apdu_legacy_blob_206',
     json: '{"networkId":"m00","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","clist":[{"args":["1","2",0],"name":"coin.TRANSFER"}]}],"meta":{"ttl":0,"gasLimit":0,"gasPrice":0}}',
     path: PATH,
+    // The shortened `meta` (ttl, gasLimit, gasPrice) is not recognised: Blind signing needed.
+    blind: true,
   },
   {
     name: 'test_apdu_legacy_blob_217',
     json: '{"networkId":"m0000000000000","signers":[{"pubKey":"19d87ede176e5b6efbb4eb1c91cc1fa9417e38f5205e8fe4e25a7aa0e41b9458","clist":[{"args":["1","2",0],"name":"coin.TRANSFER"}]}],"meta":{"ttl":0,"gasLimit":0,"gasPrice":0}}',
     path: "m/44'/626'",
+    // The shortened `meta` (ttl, gasLimit, gasPrice) is not recognised: Blind signing needed.
+    blind: true,
   },
   {
     name: 'test_apdu_legacy_blob_218',
     json: '{"networkId":"m00000000000000","signers":[{"pubKey":"19d87ede176e5b6efbb4eb1c91cc1fa9417e38f5205e8fe4e25a7aa0e41b9458","clist":[{"args":["1","2",0],"name":"coin.TRANSFER"}]}],"meta":{"ttl":0,"gasLimit":0,"gasPrice":0}}',
     path: "m/44'/626'",
+    // The shortened `meta` (ttl, gasLimit, gasPrice) is not recognised: Blind signing needed.
+    blind: true,
   },
   {
     name: 'test_apdu_legacy_blob_435',
     json: '{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":""}},"signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","clist":[{"args":["1","2",0],"name":"coin.GAS"},{"args":["1","2",11],"name":"coin.TRANSFER"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad"},"nonce":"xxxx"}',
     path: PATH,
+    blind: false,
   },
 ]
 

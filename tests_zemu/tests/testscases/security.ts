@@ -263,3 +263,147 @@ export const KEY_ATTACKS: { name: string; json: string; msg: string }[] = [
   { name: 'dup_name_in_cap', json: DUP_NAME_IN_CAP, msg: DUPLICATE },
   { name: 'dup_clist_in_signer', json: DUP_CLIST_IN_SIGNER, msg: DUPLICATE },
 ]
+
+// ---- v1.3.2 ---------------------------------------------------------------------------------------
+// Inputs for the v1.3.2 tests. Each refusal here was reviewed (or, for the stream cases, accepted)
+// by v1.3.1; each positive case still signs.
+
+// Rule 3: a signature that no capability list on screen bounds is blind signing. An unscoped signer
+// (missing, null or empty clist) and a `meta` the device does not recognise are refused with Blind
+// signing off and reviewed with it on.
+export const NO_CLIST = command(`[{"pubKey":"${DEVICE}"}]`)
+export const NULL_CLIST = command(`[{"pubKey":"${DEVICE}","clist":null}]`)
+// The keys of a recognised `meta` may come in any order; an unknown key still makes it unrecognised.
+const PERMUTED_META = `{"gasPrice":1.0e-5,"sender":"k:${DEVICE}","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":1634009214}`
+export const PERMUTED_META_UNKNOWN_KEY = CONTROL_TRANSFER.replace(META, PERMUTED_META.replace('}', ',"payer":"x"}'))
+export const PERMUTED_META_KEY_REPLACED = CONTROL_TRANSFER.replace(META, PERMUTED_META.replace('"sender"', '"payer"'))
+export const UNBOUNDED: { name: string; json: string }[] = [
+  { name: 'no clist', json: NO_CLIST },
+  { name: 'null clist', json: NULL_CLIST },
+  { name: 'empty clist', json: EMPTY_CLIST },
+  { name: 'meta with an unknown seventh key', json: PERMUTED_META_UNKNOWN_KEY },
+  { name: 'meta with an unknown key in place of sender', json: PERMUTED_META_KEY_REPLACED },
+]
+
+// A plain coin transfer exactly as @kadena/client 1.18.3 writes it (Pact.builder.execution(...)
+// .addSigner(...).setMeta({ chainId, senderAccount }).setNetworkId('mainnet01').createTransaction()):
+// `meta` keys in the library's order, the amount as {"decimal":"1.0"}, gasPrice 1e-8. Clear-signed.
+export const KADENA_CLIENT_1_18_3_COIN_TRANSFER =
+  '{"payload":{"exec":{"code":"(coin.transfer \\"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad\\" \\"k:9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42\\" 1.0)","data":{}}},"nonce":"kjs:nonce:1791110121913","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","scheme":"ED25519","clist":[{"name":"coin.TRANSFER","args":["k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","k:9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42",{"decimal":"1.0"}]},{"name":"coin.GAS","args":[]}]}],"meta":{"gasLimit":2500,"gasPrice":1e-8,"sender":"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","ttl":900,"creationTime":1791110121,"chainId":"0"},"networkId":"mainnet01"}'
+
+// Rule 2: one JSON value. Bytes after it, or a NUL byte anywhere, are refused.
+export const ONE_VALUE_REFUSED: { name: string; json: string; msg: string }[] = [
+  { name: 'trailing object', json: CONTROL_TRANSFER + '{}', msg: 'Unexpected unparsed bytes' },
+  { name: 'trailing text', json: CONTROL_TRANSFER + ' x', msg: 'Unexpected unparsed bytes' },
+  { name: 'second transaction', json: CONTROL_TRANSFER + CONTROL_TRANSFER, msg: 'Unexpected unparsed bytes' },
+  { name: 'NUL then JSON', json: CONTROL_TRANSFER + '\u0000{"a":1}', msg: 'Unexpected characters' },
+  { name: 'NUL in a value', json: CONTROL_TRANSFER.replace('"nonce":"n"', '"nonce":"n\u0000"'), msg: 'Unexpected characters' },
+]
+export const TRAILING_WHITESPACE = CONTROL_TRANSFER + ' \n\t\r'
+
+// Rule 4: a receiver whose name holds bytes a screen can draw as nothing (NBSP, soft hyphen, C1 NEL,
+// DEL, a C0 control). The review shows each as \xNN; the signed bytes are unchanged.
+export const INVISIBLE_RECEIVER = 'bob\u00a0x\u00ad\u007f\u0001y\u0085'
+export const INVISIBLE_RECEIVER_SHOWN = 'bob\\xC2\\xA0x\\xC2\\xAD\\x7F\\x01y\\xC2\\x85'
+export const ESCAPED_RECEIVER = deviceScoped(`{"name":"coin.TRANSFER","args":["k:${DEVICE}","${INVISIBLE_RECEIVER}",1.0]}`)
+
+// Rule 5: at most 12 fractional digits in a coin transfer amount.
+export const AMOUNT_PRECISION_REFUSED: { name: string; json: string }[] = [
+  { name: 'bare 13 places', json: expTransfer('0.1234567890123') },
+  { name: 'object 13 places', json: expTransfer('{"decimal":"1.1234567890123"}') },
+  { name: 'xchain 13 places', json: expXchain('2.0000000000001') },
+  { name: '256 nines', json: expTransfer('0.' + '9'.repeat(256)) },
+]
+export const AMOUNT_12_PLACES = expTransfer('{"decimal":"1.000000000001"}')
+
+// Rule 6: Pact 5 signature verifiers.
+export const VERIFIERS: { name: string; json: string }[] = [
+  { name: 'empty', json: CONTROL_TRANSFER.replace('"nonce":"n"', '"verifiers":[],"nonce":"n"') },
+  { name: 'null', json: CONTROL_TRANSFER.replace('"nonce":"n"', '"verifiers":null,"nonce":"n"') },
+  {
+    name: 'one verifier',
+    json: CONTROL_TRANSFER.replace('"nonce":"n"', '"verifiers":[{"name":"x","proof":"p","clist":[]}],"nonce":"n"'),
+  },
+]
+
+// Rule 7: gasLimit, ttl and creationTime are integers on the network.
+export const NON_INTEGER_META: { name: string; json: string }[] = [
+  { name: 'gasLimit 1.5', json: CONTROL_TRANSFER.replace('"gasLimit":600', '"gasLimit":1.5') },
+  { name: 'gasLimit 6e2', json: CONTROL_TRANSFER.replace('"gasLimit":600', '"gasLimit":6e2') },
+  { name: 'gasLimit string', json: CONTROL_TRANSFER.replace('"gasLimit":600', '"gasLimit":"600"') },
+  { name: 'ttl 28800.0', json: CONTROL_TRANSFER.replace('"ttl":28800', '"ttl":28800.0') },
+  { name: 'creationTime 1e3', json: CONTROL_TRANSFER.replace('"creationTime":1634009214', '"creationTime":1e3') },
+]
+
+// Rule 1 and the structured amount rules: a coin transfer long enough to need two legacy 0x10 APDUs.
+export const LONG_COIN_TRANSFER: TransferFields = {
+  ...TRANSFER_OK,
+  recipient_chain: '10',
+  network: 'mainnet01-long-name_',
+  amount: '10000000000000000000.000000000000',
+  gas_price: '0.000000010000000000',
+  gas_limit: '2500000000',
+  creation_time: '170000000000',
+  chain_id: '10',
+  nonce: 'x'.repeat(32),
+  ttl: '28800000000000000000',
+}
+
+// The touch review shows every page of every item as one pair and may hold at most 253 pairs: the
+// display layer counts pairs, and then screens (first page, pair screens, last page), in 8 bits.
+export const REVIEW_MAX_PAIRS = 253
+// zxlib MAX_CHARS_PER_VALUE1_LINE per touch model (a page holds one character less).
+export const REVIEW_VALUE_CHARS: Record<string, number> = { stax: 160, flex: 162, apex_p: 144 }
+
+// A clear-signed review of `n` coin transfers whose sender and receiver are 290 bytes of no-break
+// spaces each: every such value is shown as 1160 characters (\xC2\xA0), 8 pages on Stax and Flex,
+// 9 on Apex P.
+const NBSP_ACCOUNT = '\u00a0'.repeat(145)
+export const longReview = (n: number) =>
+  deviceScoped(Array.from({ length: n }, () => `{"name":"coin.TRANSFER","args":["${NBSP_ACCOUNT}","${NBSP_ACCOUNT}",1.0]}`).join(','))
+// Pairs of longReview(n): Signing, On Network, Requiring, Of Key, Unscoped Signer, On Chain, Using Gas,
+// and per transfer its title, sender, receiver and amount.
+export function longReviewPages(n: number, valueChars: number): number {
+  const perValue = Math.ceil(1160 / (valueChars - 1))
+  return 7 + n * (2 + 2 * perValue)
+}
+
+// A review of exactly `pairs` pairs on a touch model whose value page holds `valueChars - 1`
+// characters, packed at about one pair per screen: the network, every amount and every page of
+// every sender and receiver fill a page exactly, so each sits alone on its screen (as each transfer
+// title between them does). An account of k pages is a few letters and then no-break spaces, each
+// shown as \xC2\xA0. The entry also holds a capability the device cannot verify, so the review is a
+// blind-signing one, with its warning pages.
+// Pairs: Signing, On Network, Requiring, Of Key, Unscoped Signer, per transfer its title, k sender
+// pages, k receiver pages and the amount, then the unverified capability and its WARNING, On Chain
+// and Using Gas.
+export function exactReview(pairs: number, valueChars: number): { json: string; transfers: number } {
+  const page = valueChars - 1
+  const account = (k: number) => {
+    const nbsp = Math.floor((k * page) / 8)
+    return 'a'.repeat(k * page - 8 * nbsp) + '\u00a0'.repeat(nbsp)
+  }
+  const bytes = (k: number) => Buffer.from(account(k), 'utf-8').length
+  let kmax = 1
+  while (bytes(kmax + 1) <= 299) kmax++
+  const perTransfer: number[] = []
+  let left = pairs - 9
+  while (left > 0) {
+    let take = Math.min(2 + 2 * kmax, left)
+    // Never leave fewer pairs than the smallest transfer has (title, one page each way, amount).
+    if (left - take > 0 && left - take < 4) take -= 4 - (left - take)
+    if (take < 4) throw new Error(`cannot build a review of ${pairs} pairs`)
+    perTransfer.push(take)
+    left -= take
+  }
+  const amount = '1'.repeat(page - 4) // shown as "KDA " and the digits: one full page
+  const caps = perTransfer.map(t => {
+    const from = Math.ceil((t - 2) / 2)
+    return `{"name":"coin.TRANSFER","args":["${account(from)}","${account(t - 2 - from)}",${amount}]}`
+  })
+  const json = deviceScoped([...caps, '{"name":"free.unverified.CAP","args":[]}'].join(',')).replace(
+    '"networkId":"mainnet01"',
+    `"networkId":"${'n'.repeat(page)}"`,
+  )
+  return { json, transfers: perTransfer.length }
+}

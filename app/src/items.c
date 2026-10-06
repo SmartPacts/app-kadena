@@ -50,6 +50,7 @@ static items_error_t items_storeTxCrossItem(uint16_t transfer_token_index, uint8
 static items_error_t items_storeTxRotateItem(uint16_t transfer_token_index);
 static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t transfer_token_index);
 static items_error_t items_storeRotateWarning();
+static void items_checkIntegerMeta();
 
 #define MAX_ITEM_LENGTH_TO_DISPLAY 256
 
@@ -77,6 +78,15 @@ static bool unverified_cap_in_scope = false;
 // (S14): the screen would show it raw, and the network reads several of those forms as other decimals.
 static bool amount_not_plain = false;
 
+// Set when the signature is not bounded by a capability list the review shows: the device's entry has
+// no capability (missing, null or empty clist: the WARNING item), a value is too large to show, or
+// `meta` is not recognised (the CAUTION item). Signing then needs the Blind signing setting.
+static bool unbounded_in_scope = false;
+
+// Set when a recognised `meta` holds a gasLimit, ttl or creationTime that is not plain digits. The
+// network reads these as integers and would round a fraction, so they are refused.
+static bool meta_not_integer = false;
+
 // S12: the digest the device signs. parsed_digest is computed while parsing (blake2b-256 of the JSON
 // the review shows, or the 32 bytes of a hash to sign). When a signing review is shown it is copied
 // to review_digest, which no later parse touches; approval signs exactly review_digest and never
@@ -93,6 +103,8 @@ items_error_t items_initItems() {
     rotate_in_scope = false;
     unverified_cap_in_scope = false;
     amount_not_plain = false;
+    unbounded_in_scope = false;
+    meta_not_integer = false;
     MEMZERO(parsed_digest, sizeof(parsed_digest));
     parsed_digest_ready = false;
 
@@ -105,9 +117,11 @@ items_error_t items_initItems() {
 
 item_array_t *items_getItemArray() { return &item_array; }
 
-bool items_blindSignRequired() { return rotate_in_scope || unverified_cap_in_scope; }
+bool items_blindSignRequired() { return rotate_in_scope || unverified_cap_in_scope || unbounded_in_scope; }
 
 bool items_amountNotPlain() { return amount_not_plain; }
+
+bool items_metaNotInteger() { return meta_not_integer; }
 
 items_error_t items_bindReviewDigest() {
     if (!parsed_digest_ready) {
@@ -131,8 +145,12 @@ void items_clearReviewDigest() {
     review_digest_bound = false;
 }
 
-// digits('.' digits)?: no sign, no exponent, no lone or trailing '.', and no leading zero in the
-// integer part (a single 0 before the '.' is fine).
+// Fractional digits of coin's unit (coin.MINIMUM_PRECISION). The network rounds a JSON number with a
+// longer fraction (at 255 places), so a longer amount would not be the one shown.
+#define AMOUNT_MAX_FRACTION_DIGITS 12
+
+// digits('.' digits)?: no sign, no exponent, no lone or trailing '.', no leading zero in the integer
+// part (a single 0 before the '.' is fine), and at most 12 fractional digits.
 static bool items_isPlainDecimal(const char *v, uint16_t len) {
     uint16_t i = 0;
     while (i < len && v[i] >= '0' && v[i] <= '9') {
@@ -144,7 +162,7 @@ static bool items_isPlainDecimal(const char *v, uint16_t len) {
     if (i == len) {
         return true;
     }
-    if (v[i] != '.' || i + 1 == len) {
+    if (v[i] != '.' || i + 1 == len || len - i - 1 > AMOUNT_MAX_FRACTION_DIGITS) {
         return false;
     }
     for (i++; i < len; i++) {
@@ -212,6 +230,8 @@ items_error_t items_storeItems(tx_type_t tx_type) {
         if (parser_validateMetaField() != parser_ok) {
             CHECK_ITEMS_ERROR(items_storeCaution());
         } else {
+            items_checkIntegerMeta();
+
             CHECK_ITEMS_ERROR(items_storeChainId());
 
             CHECK_ITEMS_ERROR(items_storeUsingGas());
@@ -385,6 +405,7 @@ static items_error_t items_storeAllTransfers() {
     } else {
         // Non-existing/Null Signers or Clist
         item_t *item = &item_array.items[item_array.numOfItems];
+        unbounded_in_scope = true;
         item->key = key_warning;
         item_array.toString[item_array.numOfItems] = items_warningToDisplayString;
         INCREMENT_NUM_ITEMS()
@@ -407,11 +428,39 @@ static items_error_t items_storeHashWarning() {
 static items_error_t items_storeCaution() {
     item_t *item = &item_array.items[item_array.numOfItems];
 
+    unbounded_in_scope = true;
     item->key = key_caution;
     item_array.toString[item_array.numOfItems] = items_cautionToDisplayString;
     INCREMENT_NUM_ITEMS()
 
     return items_ok;
+}
+
+// gasLimit, ttl and creationTime of a recognised `meta`, when present, must be plain digits.
+static void items_checkIntegerMeta() {
+    static const char *const fields[] = {JSON_GAS_LIMIT, JSON_TTL, JSON_CREATION_TIME};
+    const parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+    uint16_t meta_token_index = 0;
+    if (object_get_value(json_all, 0, JSON_META, &meta_token_index) != parser_ok) {
+        return;
+    }
+    for (uint8_t f = 0; f < sizeof(fields) / sizeof(fields[0]); f++) {
+        uint16_t value_index = 0;
+        if (object_get_value(json_all, meta_token_index, (const char *)PIC(fields[f]), &value_index) != parser_ok) {
+            continue;
+        }
+        const jsmntok_t *value = &json_all->tokens[value_index];
+        if (value->type != JSMN_PRIMITIVE || value->end <= value->start) {
+            meta_not_integer = true;
+            return;
+        }
+        for (int i = value->start; i < value->end; i++) {
+            if (json_all->buffer[i] < '0' || json_all->buffer[i] > '9') {
+                meta_not_integer = true;
+                return;
+            }
+        }
+    }
 }
 
 static items_error_t items_storeChainId() {
@@ -456,6 +505,7 @@ static items_error_t items_checkTxLengths() {
 
     for (uint8_t i = 0; i < item_array.numOfItems; i++) {
         if (!item_array.items[i].can_display) {
+            unbounded_in_scope = true;
             item->key = key_warning;
             item_array.toString[item_array.numOfItems] = items_txTooLargeToDisplayString;
             INCREMENT_NUM_ITEMS()

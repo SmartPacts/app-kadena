@@ -11,17 +11,23 @@ This is the maintained continuation of the Kadena Ledger app, originally develop
 upstream repository is no longer maintained, and its last release (v1.2.0) targets Ledger
 API_LEVEL 24, which current Nano S+ firmware (OS 1.6.x = API_LEVEL 26) refuses to install.
 
-This continuation (current release: v1.3.1):
+This continuation (current release: v1.3.2):
 
 - rebuilds the app against the current Ledger SDK (API_LEVEL 26) so it installs on today's
   firmware, for all five supported devices;
 - includes memory-safety hardening in the transaction-display renderers and the JSON parser;
-- v1.3.1 is a security patch. The device now reviews the signer entry of its own key, clear-signs
-  only plain KDA gas and transfer capabilities and asks for the Blind signing setting for anything
-  else, refuses malformed transfer fields, escaped or repeated JSON keys and amounts that are not
-  plain numbers, and refuses commands while a review is waiting for approval. Anything other than a
-  plain KDA transfer therefore needs Blind signing switched on in the app's settings. Details are in
-  [CHANGELOG.md](CHANGELOG.md);
+- v1.3.1 is a security patch: the device now enforces that it reviews the signer entry of its own
+  key, treats an empty capability list as unscoped, matches the signer key exactly, validates every
+  structured-transfer field's content before building the JSON it signs, refuses a legacy transfer
+  item that runs past the received bytes, requires blind signing for `coin.ROTATE`, and refuses
+  escaped or duplicate JSON keys that would let the review differ from what the network executes. There is no
+  APDU / wire-protocol change. Details are in [CHANGELOG.md](CHANGELOG.md);
+- v1.3.2 is a security patch: one signing stream per command (0x6987 for an APDU of another
+  command, and the command's own derivation path signs), no bytes signed after the JSON value or
+  after a NUL, blind signing for a signer with no capability list or an unrecognised `meta`,
+  invisible characters shown as `\xNN`, at most 12 fractional digits in a coin amount, and
+  refusal of `verifiers` and of non-integer gas fields. The `meta` keys are accepted in any order,
+  so a plain coin transfer built with `@kadena/client` is clear-signed;
 - keeps the full Zemu test matrix green across all five device targets;
 - is maintained by [Smart Pacts](https://smartpacts.io), with the goal of returning the app to
   official availability through the Ledger app store.
@@ -40,41 +46,34 @@ Please:
 - **Have a separate and marked device that is used ONLY for development and testing**
 
 
-## Installing the app
+## Download and install
 
 *Once the app is approved by Ledger, it will be available in their app store (Ledger Live).*
 
-Until then, **Nano S+ owners** can install a release build. If you are not a developer, use the
-guided installer and its documentation rather than the commands below:
+Kadena is currently not offered in Ledger's My Ledger catalog (as of September 2026). So on the
+Nano S+ the app is installed by sideloading. Nano X, Stax, Flex and Nano Gen5 have no sideloading
+path; the app stays unavailable on them until it is listed. The first-generation Nano S is not
+supported.
 
-**https://smartpacts.io/ledger/**
-
-Developers can load a release directly. Download `installer_nanos_plus.sh` from the
-[release page](https://github.com/SmartPacts/app-kadena/releases), verify it against
-`SHA256SUMS.txt`, and run:
+To sideload on a Nano S+: download `installer_nanos_plus.sh` from the release page
+(https://github.com/SmartPacts/app-kadena/releases), verify it against `SHA256SUMS.txt`, and run:
 
 ```sh
 chmod +x ./installer_nanos_plus.sh
 ./installer_nanos_plus.sh load
 ```
 
-This requires Python 3 with `ledgerblue` installed. **Verify the application hash your device
-displays during installation against the value published in the release notes** — that comparison,
-not the checksum of the download, is what proves which binary your device is running. For v1.3.1
-on the Nano S+ (target `nanos2`) the expected hash is:
+This requires Python 3 with `ledgerblue` installed. Verify the application hash your device
+displays during installation against the value in the release notes. For v1.3.2 on the Nano S+
+(target `nanos2`) the expected hash is:
 
 ```
-726078b6269fdb4ef9a70e28c66d7a00ef9f94a0f4a5c7adac11f95fc3cd814a
+0f6f62ceb5f9b841fbd1b2253a9d14c221000d8da2aeb733c4d70ee30888ccc6
 ```
-
-Kadena is currently not offered in Ledger's My Ledger catalog (as of September 2026). So on the
-Nano S+ the app is installed by sideloading, as described above. Nano X, Stax, Flex and Nano Gen5
-have no sideloading path; the app stays unavailable on them until it is listed.
 
 ## Troubleshooting / Support
 If you encounter any issues while using the app, please open an issue in this repository and the
-maintainers will review it. Installation problems are better reported to the
-[installer repository](https://github.com/SmartPacts/kadena-ledger-installer/issues).
+maintainers will review it.
 
 
 # Development

@@ -45,13 +45,44 @@ _Static_assert(INS_GET_VERSION == REVIEW_LOCK_INS_GET_VERSION, "S12 lock must al
 #define INS_SIGN_HASH 0x23
 #define INS_SIGN_TRANSFER 0x24
 
-static bool tx_initialized = false;
+// One signing stream for both command families (0x22-0x24 and the legacy 0x03, 0x04, 0x10): the INS
+// of the open stream (0 when none is open) and the derivation path its signing command gave. Every
+// chunk of a stream must carry the INS of its first chunk, so bytes sent under one command are never
+// parsed and signed as another (a JSON transaction finished as a hash). The path is put back before
+// the transaction is parsed, so an address command between chunks cannot change the key that signs.
+#define STREAM_NONE 0
+static uint8_t stream_ins = STREAM_NONE;
+static uint32_t stream_path[HDPATH_LEN_DEFAULT];
+
+void stream_open(uint8_t ins) {
+    stream_ins = ins;
+    MEMCPY(stream_path, hdPath, sizeof(stream_path));
+}
+
+void stream_close() { stream_ins = STREAM_NONE; }
+
+bool stream_continues(uint8_t ins) {
+    if (stream_ins == STREAM_NONE) {
+        return false;
+    }
+    if (stream_ins == ins) {
+        return true;
+    }
+    stream_ins = STREAM_NONE;
+    THROW(APDU_CODE_TX_NOT_INITIALIZED);
+    return false;
+}
+
+void stream_restorePath() { MEMCPY(hdPath, stream_path, sizeof(stream_path)); }
 
 // Global variable to store error message offset for custom error display
 uint16_t G_error_message_offset = 0;
 
 void extractHDPath(uint32_t rx, uint32_t offset) {
-    tx_initialized = false;
+    // An address command closes a stream of the modern signing commands (not a legacy one).
+    if (stream_ins == INS_SIGN || stream_ins == INS_SIGN_HASH || stream_ins == INS_SIGN_TRANSFER) {
+        stream_close();
+    }
 
     if ((rx - offset) < sizeof(uint32_t) * HDPATH_LEN_DEFAULT) {
         THROW(APDU_CODE_WRONG_LENGTH);
@@ -72,35 +103,38 @@ __Z_INLINE bool process_chunk(__Z_UNUSED volatile uint32_t *tx, uint32_t rx) {
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
+    const uint8_t ins = G_io_apdu_buffer[OFFSET_INS];
     uint32_t added = 0;
     switch (payloadType) {
         case P1_INIT:
             tx_initialize();
             tx_reset();
+            // A first chunk closes any open stream, of either family.
+            stream_close();
             extractHDPath(rx, OFFSET_DATA);
-            tx_initialized = true;
+            stream_open(ins);
             return false;
         case P1_ADD:
-            if (!tx_initialized) {
+            if (!stream_continues(ins)) {
                 THROW(APDU_CODE_TX_NOT_INITIALIZED);
             }
             added = tx_append(&(G_io_apdu_buffer[OFFSET_DATA]), rx - OFFSET_DATA);
             if (added != rx - OFFSET_DATA) {
-                tx_initialized = false;
+                stream_close();
                 THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
             }
             return false;
         case P1_LAST:
-            if (!tx_initialized) {
+            if (!stream_continues(ins)) {
                 THROW(APDU_CODE_TX_NOT_INITIALIZED);
             }
             added = tx_append(&(G_io_apdu_buffer[OFFSET_DATA]), rx - OFFSET_DATA);
-            tx_initialized = false;
+            stream_close();
             if (added != rx - OFFSET_DATA) {
-                tx_initialized = false;
                 THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
             }
-            tx_initialized = false;
+            // Sign with the path of this stream's first chunk.
+            stream_restorePath();
             return true;
         default:
             break;

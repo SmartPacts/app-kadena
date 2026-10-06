@@ -337,8 +337,14 @@ describe.each(HANDLER_LEGACY_TEST_CASES)('Tx transfer', function (data) {
 describe.each(APDU_TEST_CASES)('APDU tests ', function (data) {
   test.concurrent.each(models)('legacy apdu test', async function (m) {
     const sim = new Zemu(m.path)
+    // Since v1.3.2 a `meta` the device does not recognise (here a shortened one) is blind signing;
+    // each fixture states which it expects.
+    const blind = data.blind
     try {
       await sim.start({ ...defaultOptions, model: m.name })
+      if (blind) {
+        await sim.toggleBlindSigning()
+      }
       const app = new Kda(sim.getTransport())
 
       const txBlob = Buffer.from(data.json, 'utf-8')
@@ -349,7 +355,7 @@ describe.each(APDU_TEST_CASES)('APDU tests ', function (data) {
       var signatureRequest = app.signTransaction(data.path, txBlob)
 
       await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
-      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-${data.name}`)
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-${data.name}`, true, 0, 15000, blind)
 
       // Wait until we are not in the main menu
       const signatureResponse = await signatureRequest

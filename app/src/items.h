@@ -29,6 +29,7 @@ uint16_t items_getTotalItems();
 item_array_t *items_getItemArray();
 bool items_blindSignRequired();
 bool items_amountNotPlain();
+bool items_metaNotInteger();
 
 /// S12: copy the digest computed while parsing to the slot bound to the review being shown.
 items_error_t items_bindReviewDigest();

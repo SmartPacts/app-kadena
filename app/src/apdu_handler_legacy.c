@@ -18,10 +18,10 @@
 
 #include "actions.h"
 #include "addr.h"
+#include "app_main.h"
 #include "app_mode.h"
 #include "view_internal.h"
 
-static bool tx_initialized = false;
 static uint32_t payload_length = 0;
 static uint32_t hdpath_length = 0;
 static uint8_t local_data_len = 0;
@@ -189,21 +189,22 @@ void legacy_append_data(uint8_t *buffer, uint32_t len) {
 
     if (added != len) {
         tx_reset();
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
     }
 }
 
 bool legacy_process_chunk(__Z_UNUSED volatile uint32_t *tx, uint32_t rx, bool has_len, uint32_t fixed_len) {
     if (rx < LEGACY_HEADER_LENGTH) {
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
     uint32_t offset = LEGACY_HEADER_LENGTH;
     uint32_t payload_size = rx - offset;
 
-    if (!tx_initialized) {
+    // A chunk of another signing command while this stream is open is refused (0x6987).
+    if (!stream_continues(G_io_apdu_buffer[OFFSET_INS])) {
         // read length of data
         if (has_len) {
             payload_length = (uint32_t)G_io_apdu_buffer[5] | ((uint32_t)G_io_apdu_buffer[6] << 8) |
@@ -220,14 +221,14 @@ bool legacy_process_chunk(__Z_UNUSED volatile uint32_t *tx, uint32_t rx, bool ha
 
         tx_initialize();
         tx_reset();
-        tx_initialized = true;
+        stream_open(G_io_apdu_buffer[OFFSET_INS]);
     }
 
     legacy_append_data(&(G_io_apdu_buffer[offset]), payload_size);
 
     // Check if the end of the chunk is reached
     if ((rx < LEGACY_CHUNK_SIZE + LEGACY_HEADER_LENGTH) || legacy_check_end_of_chunk()) {
-        tx_initialized = false;
+        stream_close();
         return true;
     }
 
@@ -249,13 +250,14 @@ static uint32_t legacy_initialize_transfer(uint32_t rx) {
 
     tx_initialize();
     tx_reset();
-    tx_initialized = true;
+    // The stream keeps this path: it signs even if an address command changes hdPath before the end.
+    stream_open(BCOMP_MAKE_TRANSFER_TX);
 
     uint32_t offset = hdpath_length + LEGACY_OFFSET_HDPATH_SIZE;
 
     // The tx_type byte must also be within the received bytes.
     if (offset + 1 > rx) {
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
@@ -277,18 +279,18 @@ static uint32_t legacy_process_existing_transfer(uint32_t *payload_size, uint32_
         // attacker-set length byte (G_io_apdu_buffer[offset]) appends stale APDU-buffer
         // RAM beyond rx into the signed message (OOB read + integrity break).
         if (offset + *payload_size + 1 > rx) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_WRONG_LENGTH);
         }
         legacy_append_data(&G_io_apdu_buffer[offset], *payload_size + 1);
     } else {
         if (item_len <= local_data_len) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_DATA_INVALID);
         }
         *payload_size = item_len - local_data_len;
         if (offset + *payload_size > rx) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_WRONG_LENGTH);
         }
         legacy_append_data(&G_io_apdu_buffer[offset], *payload_size);
@@ -309,17 +311,17 @@ static void legacy_handle_overflow(uint32_t rx, uint32_t offset, uint32_t payloa
     // bytes up to LEGACY_FULL_CHUNK_SIZE were never received and the copy below would read stale
     // APDU-buffer bytes past rx.
     if (rx != LEGACY_FULL_CHUNK_SIZE) {
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
     if (offset > LEGACY_FULL_CHUNK_SIZE) {
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_DATA_INVALID);
     }
     local_data_len = LEGACY_FULL_CHUNK_SIZE - offset;
     if (local_data_len >= LEGACY_LOCAL_BUFFER_SIZE) {
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
     }
     MEMCPY(local_data, &G_io_apdu_buffer[offset], local_data_len);
@@ -327,18 +329,19 @@ static void legacy_handle_overflow(uint32_t rx, uint32_t offset, uint32_t payloa
 
 bool legacy_process_transfer_chunk(uint32_t rx) {
     if (rx < LEGACY_HEADER_LENGTH) {
-        tx_initialized = false;
+        stream_close();
         THROW(APDU_CODE_WRONG_LENGTH);
     }
 
     uint32_t payload_size = 0;
-    uint32_t offset = tx_initialized ? legacy_process_existing_transfer(&payload_size, rx) : legacy_initialize_transfer(rx);
+    uint32_t offset = stream_continues(BCOMP_MAKE_TRANSFER_TX) ? legacy_process_existing_transfer(&payload_size, rx)
+                                                               : legacy_initialize_transfer(rx);
 
     while (offset < rx) {
         offset += payload_size + 1;
 
         if (offset > rx) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_DATA_INVALID);
         }
 
@@ -351,7 +354,7 @@ bool legacy_process_transfer_chunk(uint32_t rx) {
         // there is no next length byte to read. Reading G_io_apdu_buffer[rx] would consume
         // a stale byte. Treat end-of-received-data as malformed rather than reading past it.
         if (offset >= rx) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_DATA_INVALID);
         }
 
@@ -367,19 +370,19 @@ bool legacy_process_transfer_chunk(uint32_t rx) {
         // length byte claiming more than was sent appends stale APDU-buffer bytes past rx into the
         // signed message (for the last item, the ttl, which is never displayed).
         if (next_offset > rx) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_WRONG_LENGTH);
         }
 
         legacy_append_data(&G_io_apdu_buffer[offset], payload_size + 1);
 
         if (++items > LEGACY_TRANSFER_NUM_ITEMS) {
-            tx_initialized = false;
+            stream_close();
             THROW(APDU_CODE_DATA_INVALID);
         }
 
         if (next_offset >= rx && next_offset != LEGACY_FULL_CHUNK_SIZE) {
-            tx_initialized = false;
+            stream_close();
             if (items != LEGACY_TRANSFER_NUM_ITEMS) {
                 THROW(APDU_CODE_DATA_INVALID);
             }
@@ -387,6 +390,7 @@ bool legacy_process_transfer_chunk(uint32_t rx) {
         }
     }
 
+    stream_close();
     THROW(APDU_CODE_DATA_INVALID);
     return false;
 }
@@ -518,6 +522,9 @@ void legacy_handleSignTransferTx(volatile uint32_t *flags, volatile uint32_t *tx
     }
 
     uint32_t buffer_length = tx_get_buffer_length();
+
+    // Sign with the path of this transfer's first chunk.
+    stream_restorePath();
 
     // Reset BLS UI for next transaction
     app_mode_skip_blindsign_ui();

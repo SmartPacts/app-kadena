@@ -43,6 +43,8 @@ typedef struct {
     bool blindsign;
     // When set, the transaction must be refused with this error description.
     std::string error;
+    // When set, the refusal expected in expert mode only (expert mode adds review items).
+    std::string error_expert;
 } testcase_t;
 
 class JsonTestsA : public ::testing::TestWithParam<testcase_t> {
@@ -108,9 +110,10 @@ std::vector<testcase_t> GetJsonTestCases(std::string jsonFile) {
 
         const bool blindsign = test_case_json.value("blindsign", false);
         const std::string error = test_case_json.value("error", std::string());
+        const std::string error_expert = test_case_json.value("error_expert", std::string());
 
         answer.push_back(testcase_t{test_case_json["index"].get<uint64_t>(), test_case_json["name"].get<std::string>(), blob,
-                                    outputs, outputs_expert, device_key, blindsign, error});
+                                    outputs, outputs_expert, device_key, blindsign, error, error_expert});
     }
 
     return answer;
@@ -124,7 +127,8 @@ void check_testcase(const testcase_t &tc, bool expert_mode) {
     parser_context_t ctx;
     parser_error_t err;
 
-    uint8_t buffer[5000];
+    // As large as the device's transaction buffer (15104 bytes), plus the NUL the harness relies on.
+    static uint8_t buffer[15104 + 1];
     MEMZERO(buffer, sizeof(buffer));
     uint16_t bufferLen = parseHexString(buffer, sizeof(buffer), tc.blob.c_str());
 
@@ -133,9 +137,10 @@ void check_testcase(const testcase_t &tc, bool expert_mode) {
         err = parser_validate(&ctx);
     }
 
-    if (!tc.error.empty()) {
-        ASSERT_NE(err, parser_ok) << "expected refusal: " << tc.error;
-        EXPECT_STREQ(parser_getErrorDescription(err), tc.error.c_str());
+    const std::string &error = (expert_mode && !tc.error_expert.empty()) ? tc.error_expert : tc.error;
+    if (!error.empty()) {
+        ASSERT_NE(err, parser_ok) << "expected refusal: " << error;
+        EXPECT_STREQ(parser_getErrorDescription(err), error.c_str());
         return;
     }
 

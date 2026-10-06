@@ -20,6 +20,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define LEGACY_CHUNK_SIZE 230
@@ -32,6 +33,16 @@ extern "C" {
 #define LEGACY_LOCAL_BUFFER_SIZE 33
 #define LEGACY_NOT_SHOW_ADDRESS 0
 #define LEGACY_SHOW_ADDRESS 1
+
+// The signing stream shared by both command families (apdu_handler.c).
+/// Opens a stream for this INS and keeps the current derivation path as its signing path.
+void stream_open(uint8_t ins);
+void stream_close();
+/// True when a stream of this INS is open, false when none is; a stream of another INS is closed and
+/// the command refused (0x6987).
+bool stream_continues(uint8_t ins);
+/// Puts the stream's signing path back into hdPath.
+void stream_restorePath();
 
 void legacy_handleGetVersion(volatile uint32_t *tx);
 void legacy_handleGetAddr(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx, uint8_t requireConfirmation);

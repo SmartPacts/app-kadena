@@ -43,6 +43,7 @@ extern "C" {
 #define JSON_GAS_LIMIT "gasLimit"
 #define JSON_GAS_PRICE "gasPrice"
 #define JSON_SENDER "sender"
+#define JSON_VERIFIERS "verifiers"
 
 typedef struct {
     const uint8_t *buffer;

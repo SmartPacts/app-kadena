@@ -67,7 +67,23 @@ tx_hash_t *parser_hash_obj;
 parser_error_t _read_json_tx(parser_context_t *c) {
     parser_json_obj = c->json;
 
+    // Every signed byte must belong to the one JSON value that is reviewed. The tokenizer stops at a
+    // NUL, so a NUL anywhere is refused first.
+    if (c->buffer != NULL && memchr(c->buffer, '\0', c->bufferLen) != NULL) {
+        return parser_unexpected_characters;
+    }
+
     CHECK_ERROR(json_parse(&(parser_json_obj->json), (const char *)c->buffer, c->bufferLen));
+
+    // Nothing but whitespace may follow the top-level value (the tokenizer accepts several values).
+    const jsmntok_t *root = &parser_json_obj->json.tokens[0];
+    // A string token's span excludes its closing quote.
+    for (int i = root->end + (root->type == JSMN_STRING ? 1 : 0); i < (int)c->bufferLen; i++) {
+        const char ch = (char)c->buffer[i];
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            return parser_unexpected_unparsed_bytes;
+        }
+    }
 
     parser_json_obj->tx = (const char *)c->buffer;
     parser_json_obj->flags.cache_valid = 0;
@@ -225,6 +241,12 @@ parser_error_t parser_findDeviceSigner() {
     signers_count = 0;
 
     CHECK_ERROR(parser_checkKeyIntegrity(json_all));
+
+    // Pact 5 signature verifiers can grant capabilities the review cannot show: refuse them.
+    uint16_t verifiers_token_index = 0;
+    if (object_get_value(json_all, 0, JSON_VERIFIERS, &verifiers_token_index) == parser_ok) {
+        return parser_unexpected_value;
+    }
 
     CHECK_ERROR(parser_getDeviceKeyHex(device_hex, sizeof(device_hex), &device_hex_len));
     if (device_hex_len != 2 * PUB_KEY_LENGTH) {
@@ -410,6 +432,9 @@ parser_error_t parser_validateMetaField() {
         return parser_invalid_meta_field;
     }
 
+    // The keys may come in any order (wallets do not all write the order above), each at most once
+    // (duplicates are refused earlier). Every value is then looked up by its name.
+    uint8_t present = 0;
     for (uint16_t i = 0; i < meta_num_elements; i++) {
         object_get_nth_key(json_all, meta_token_index, i, &key_token_idx);
         token = &(json_all->tokens[key_token_idx]);
@@ -422,11 +447,23 @@ parser_error_t parser_validateMetaField() {
         MEMCPY(meta_curr_key, json_all->buffer + token->start, token->end - token->start);
         meta_curr_key[token->end - token->start] = '\0';
 
-        if (strcmp((const char *)PIC(keywords[i]), meta_curr_key) != 0) {
+        uint8_t k = 0;
+        while (k < array_length(keywords) && strcmp((const char *)PIC(keywords[k]), meta_curr_key) != 0) {
+            k++;
+        }
+        if (k == array_length(keywords) || (present & (1u << k)) != 0) {
             return parser_invalid_meta_field;
         }
+        present |= (uint8_t)(1u << k);
 
         MEMZERO(meta_curr_key, sizeof(meta_curr_key));
+    }
+
+    // The same keys must be present as when the order was fixed: a key is accepted only with every
+    // key before it in the list above (so gasLimit, chainId and gasPrice, which the review reads,
+    // come with creationTime and ttl; sender stays optional).
+    if ((present & (uint8_t)(present + 1)) != 0) {
+        return parser_invalid_meta_field;
     }
 
     return parser_ok;
@@ -805,6 +842,9 @@ static bool field_allowed(uint8_t field, const char *v, uint8_t len, uint8_t tx_
             }
             return true;
         case AMOUNT_POS:
+            // Pasted as is into the code, where Pact refuses an integer for amount:decimal: the amount
+            // must have a fractional part.
+            return is_decimal(v, len) && memchr(v, '.', len) != NULL;
         case GAS_LIMIT_POS:
         case CREATION_TIME_POS:
         case TTL_POS:

@@ -14,7 +14,9 @@
  *  limitations under the License.
  ******************************************************************************* */
 
-// v1.3.1 security patch — functional regression for the inherited defects S1-S11.
+// v1.3.1 security patch — functional regression for the inherited defects S1-S11 — and, at the end
+// of this file, the v1.3.2 rules (streams, one JSON value, blind signing for unbounded signatures,
+// screen escaping, amount precision, verifiers, integer gas fields).
 // Each refusal asserts the exact status word and, on the commands that carry one (INS 0x22 and
 // 0x24), the exact message; the legacy commands (0x03, 0x10) refuse with a bare status word. Where
 // a screen changes, the test checks its content. Every case here is refused, or reviewed with a
@@ -22,6 +24,7 @@
 
 import Zemu, { ButtonKind, isTouchDevice, TouchNavigation } from '@zondax/zemu'
 import { KadenaApp } from '@zondax/ledger-kadena'
+import Kda from '@zondax/hw-app-kda'
 import Transport from '@ledgerhq/hw-transport'
 import { PATH, defaultOptions, models } from './common'
 import { getTouchElement } from '@zondax/zemu/dist/buttons'
@@ -49,8 +52,25 @@ import {
   TOKEN_NAMESPACE,
   TOKEN_MODULE,
   TOKEN_CAP_JSON,
+  DEVICE,
+  UNBOUNDED,
+  KADENA_CLIENT_1_18_3_COIN_TRANSFER,
+  PERMUTED_META_UNKNOWN_KEY,
+  longReview,
+  longReviewPages,
+  exactReview,
+  REVIEW_MAX_PAIRS,
+  REVIEW_VALUE_CHARS,
+  ONE_VALUE_REFUSED,
+  TRAILING_WHITESPACE,
+  ESCAPED_RECEIVER,
+  INVISIBLE_RECEIVER_SHOWN,
+  AMOUNT_PRECISION_REFUSED,
+  AMOUNT_12_PLACES,
+  VERIFIERS,
+  NON_INTEGER_META,
 } from './testscases/security'
-import { TRANSACTIONS_TEST_CASES } from './testscases/transactions'
+import { TRANSACTIONS_TEST_CASES, HANDLER_LEGACY_TEST_CASES } from './testscases/transactions'
 import { JSON_TEST_CASES_V130 } from './testscases/json'
 import { APDU_TEST_CASES_V130 } from './testscases/legacy_apdu'
 import { NEGATIVE_SIGN_CASES_V130, UNKNOWN_CAP_RENDER_CASE_V130 } from './testscases/negative'
@@ -172,11 +192,12 @@ async function legacySignJsonReply(t: Transport, json: Buffer): Promise<Reply> {
 // reaches a review (a failing build) leaves the device waiting for the user, so the emulator is
 // restarted before the next shape. Finally the device must still answer GET_VERSION.
 type Shape = { label: string; send: (t: Transport) => Promise<Reply>; want: Reply }
-async function refuseAll(m: any, shapes: Shape[]): Promise<string[]> {
+async function refuseAll(m: any, shapes: Shape[], blind = false): Promise<string[]> {
   let sim = new Zemu(m.path)
   const failures: string[] = []
   try {
     await sim.start({ ...defaultOptions, model: m.name })
+    if (blind) await sim.toggleBlindSigning()
     for (const s of shapes) {
       const got = await s.send(sim.getTransport()).catch((e: any) => ({ sw: 'error', msg: String(e?.message ?? e) }))
       if (got.sw === s.want.sw && got.msg === s.want.msg) continue
@@ -184,6 +205,7 @@ async function refuseAll(m: any, shapes: Shape[]): Promise<string[]> {
       await sim.close()
       sim = new Zemu(m.path)
       await sim.start({ ...defaultOptions, model: m.name })
+      if (blind) await sim.toggleBlindSigning()
     }
     const v = await exchangeSW(sim.getTransport(), Buffer.from([0x00, 0x20, 0x00, 0x00, 0x00]))
     if (v !== '9000') failures.push(`GET_VERSION after the shapes: ${v}`)
@@ -437,12 +459,15 @@ describe('S4 prefix match: a sender that only starts with the device key is not 
 })
 
 describe('S5 empty clist is unscoped', function () {
+  // Since v1.3.2 an unscoped signature is blind signing: reviewed with the setting on (refused with it
+  // off, see the v1.3.2 rule 3 tests).
   test.concurrent.each(models)('%s shows Unscoped Signer and the WARNING', async function (m) {
     const sim = new Zemu(m.path)
     try {
       await sim.start({ ...defaultOptions, model: m.name })
+      await sim.toggleBlindSigning()
       const json = Buffer.from(EMPTY_CLIST, 'utf-8')
-      const { seen, signature } = await reviewAndApprove(sim, m, json)
+      const { seen, signature } = await reviewAndApprove(sim, m, json, true)
       expect(seen).toMatch(/Unscoped Signer/)
       // The WARNING text is paginated on Nano; collapse spaces and page separators.
       expect(seen.replace(/[\s|]+/g, '')).toMatch(/UNSAFETRANSACTION/)
@@ -819,5 +844,575 @@ describe('S14 transfer amounts (bare number or decimal object)', function () {
       expect(await refuseAll(m, shapes)).toEqual([])
     },
     1200000,
+  )
+})
+
+// ================================================================================================
+// v1.3.2. Every refusal below asserts the exact status word and, over 0x22 / 0x24, the exact message;
+// against the v1.3.1 ELFs each one reaches a review or is accepted instead. Each rule also has a
+// positive case that still signs.
+// ================================================================================================
+
+const INS_SIGN_HASH = 0x23
+const apdu = (ins: number, p1: number, data: Buffer) => Buffer.concat([Buffer.from([0x00, ins, p1, 0x00, data.length]), data])
+const GET_VERSION = Buffer.from([0x00, 0x20, 0x00, 0x00, 0x00])
+
+// A 230-byte first chunk of a legacy 0x03 stream: length 1000 (never reached), then 226 spaces.
+const FIRST_03 = apdu(0x03, 0, Buffer.concat([Buffer.from([0xe8, 0x03, 0x00, 0x00]), Buffer.alloc(226, 0x20)]))
+
+// The 230-byte slices of a legacy stream, as the host frames them.
+function legacySlices(ins: number, stream: Buffer): Buffer[] {
+  const out: Buffer[] = []
+  for (let i = 0; i < stream.length; i += 230) out.push(apdu(ins, 0, stream.subarray(i, Math.min(i + 230, stream.length))))
+  return out
+}
+const legacyJsonSlices = (json: Buffer) => {
+  const len = Buffer.alloc(4)
+  len.writeUInt32LE(json.length)
+  return legacySlices(0x03, Buffer.concat([len, json, Buffer.from([5]), PATH20]))
+}
+
+// m/44'/626'/5'/0/0: another key, for the address commands sent between chunks.
+const ALT_COMPONENTS = [0x8000002c, 0x80000272, 0x80000005, 0, 0]
+const ALT_PATH20 = Buffer.concat(
+  ALT_COMPONENTS.map(c => {
+    const b = Buffer.alloc(4)
+    b.writeUInt32LE(c >>> 0)
+    return b
+  }),
+)
+const LEGACY_GET_PUBKEY_ALT = apdu(0x02, 0, Buffer.concat([Buffer.from([5]), ALT_PATH20]))
+const GET_ADDR_ALT = apdu(0x21, 0, ALT_PATH20)
+
+// The 287-byte token transfer of the legacy handler tests: two legacy 0x10 APDUs.
+function longLegacyTransfer(): Buffer[] {
+  const p = HANDLER_LEGACY_TEST_CASES.find(c => c.name === 'handler_legacy_len_287')!.txParams
+  const blob = transferBlob(
+    {
+      recipient: p.recipient,
+      recipient_chain: String(p.recipient_chainId),
+      network: p.network,
+      amount: p.amount,
+      namespace: p.namespace,
+      module: p.module,
+      gas_price: p.gasPrice,
+      gas_limit: p.gasLimit,
+      creation_time: String(p.creationTime),
+      chain_id: String(p.chainId),
+      nonce: p.nonce,
+      ttl: p.ttl,
+    },
+    0,
+  )
+  const slices = legacySlices(INS_LEGACY_TRANSFER, Buffer.concat([Buffer.from([5]), PATH20, blob]))
+  expect(slices.length).toEqual(2)
+  return slices
+}
+
+// Sends `apdus` in order; every one but the last must be acknowledged with 0x9000. Returns the reply
+// to the last one (or the first one that was not acknowledged).
+async function sendAll(t: Transport, apdus: Buffer[]): Promise<Reply> {
+  for (const a of apdus.slice(0, -1)) {
+    const r = await reply(t, a)
+    if (r.sw !== '9000') return { sw: `${r.sw} (early)`, msg: r.msg }
+  }
+  return reply(t, apdus[apdus.length - 1])
+}
+
+// Several replies as one: the status words joined with '/', the messages concatenated.
+function joined(rs: Reply[]): Reply {
+  return { sw: rs.map(r => r.sw).join('/'), msg: rs.map(r => r.msg).join('') }
+}
+
+// Returns sim's transport, set to send `extra` (an address command for another path) right after the
+// first APDU with INS `ins` is answered, recording its reply. The host libraries call `send`, which is
+// bound to the emulator's underlying transport, so that transport's own `exchange` is wrapped (once).
+function injectAfterFirst(sim: Zemu, ins: number, extra: Buffer, seen: Reply[]): Transport {
+  const raw: any = (sim as any).transport
+  const exchange = raw.exchange.bind(raw)
+  raw.exchange = async (a: Buffer) => {
+    const r = await exchange(a)
+    if (a[1] === ins) {
+      delete raw.exchange
+      seen.push(await reply(sim.getTransport(), extra))
+    }
+    return r
+  }
+  return sim.getTransport()
+}
+
+describe('v1.3.2 rule 1: one signing stream, bound to its command and its path', function () {
+  test.concurrent.each(models)(
+    '%s refuses a chunk of another command while a stream is open (0x6987) and closes the stream',
+    async function (m) {
+      const json = Buffer.from(CONTROL_TRANSFER, 'utf-8')
+      const slices03 = legacyJsonSlices(json)
+      expect(slices03.length).toEqual(4)
+      const hashPayload = Buffer.concat([Buffer.alloc(32, 0x5a), Buffer.from([5]), PATH20])
+      const coinTransfer = apdu(INS_LEGACY_TRANSFER, 0, Buffer.concat([LEGACY_PATH, transferBlob(TRANSFER_OK, 0)]))
+      const shapes: Shape[] = []
+      // Every pair of modern signing commands: the second INS is refused, and so is the first one's
+      // next chunk (the stream is closed). With Blind signing on, a JSON stream finished as 0x23 was
+      // reviewed as a hash by v1.3.1.
+      for (const first of [INS_SIGN, INS_SIGN_HASH, INS_SIGN_TRANSFER]) {
+        for (const second of [INS_SIGN, INS_SIGN_HASH, INS_SIGN_TRANSFER]) {
+          if (first === second) continue
+          for (const p1 of [1, 2]) {
+            shapes.push({
+              label: `0x${first.toString(16)} then 0x${second.toString(16)} P1=${p1}`,
+              send: async t => {
+                const init = await reply(t, apdu(first, 0, PATH20))
+                if (init.sw !== '9000') return init
+                return joined([await reply(t, apdu(second, p1, Buffer.alloc(32, 7))), await reply(t, apdu(first, 2, Buffer.alloc(32, 7)))])
+              },
+              want: { sw: '6987/6987', msg: '' },
+            })
+          }
+        }
+      }
+      shapes.push(
+        {
+          label: '0x22 INIT + ADD, finished with 0x23',
+          send: async t =>
+            sendAll(t, [
+              apdu(INS_SIGN, 0, PATH20),
+              apdu(INS_SIGN, 1, Buffer.alloc(16, 0x5a)),
+              apdu(INS_SIGN_HASH, 2, Buffer.alloc(16, 0x5a)),
+            ]),
+          want: { sw: '6987', msg: '' },
+        },
+        {
+          label: 'legacy 0x03 chunk during a 0x22 stream',
+          send: async t => {
+            const init = await reply(t, apdu(INS_SIGN, 0, PATH20))
+            if (init.sw !== '9000') return init
+            return joined([await reply(t, FIRST_03), await reply(t, apdu(INS_SIGN, 1, Buffer.from('{}')))])
+          },
+          want: { sw: '6987/6987', msg: '' },
+        },
+        {
+          label: 'a 0x22 first chunk closes an open 0x03 stream',
+          send: async t => sendAll(t, [slices03[0], apdu(INS_SIGN, 0, PATH20), slices03[1]]),
+          want: { sw: '6987', msg: '' },
+        },
+        {
+          // The 0x22 chunk closes the 0x03 stream, so the rest of the 0x03 data is read as a new
+          // command whose first 4 bytes (JSON text) are a length it never reaches: refused.
+          label: 'a 0x22 chunk during a 0x03 stream is refused and closes it',
+          send: async t => {
+            const first = await reply(t, slices03[0])
+            if (first.sw !== '9000') return first
+            const refused = await reply(t, apdu(INS_SIGN, 1, Buffer.from('xx')))
+            return joined([refused, await sendAll(t, slices03.slice(1))])
+          },
+          want: { sw: '6987/6984', msg: '' },
+        },
+        {
+          label: '0x03 open, then 0x04',
+          send: async t => sendAll(t, [FIRST_03, apdu(0x04, 0, hashPayload)]),
+          want: { sw: '6987', msg: '' },
+        },
+        {
+          label: '0x03 open, then 0x10',
+          send: async t => sendAll(t, [FIRST_03, coinTransfer]),
+          want: { sw: '6987', msg: '' },
+        },
+        {
+          label: '0x10 open, then 0x03',
+          send: async t => sendAll(t, [longLegacyTransfer()[0], FIRST_03]),
+          want: { sw: '6987', msg: '' },
+        },
+      )
+      expect(await refuseAll(m, shapes, true)).toEqual([])
+    },
+    1200000,
+  )
+
+  // An address command for another path between the chunks does not change the key that signs.
+  test.concurrent.each(models)('%s signs a 0x22 stream with its own path after a legacy 0x02 for another path', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(CONTROL_TRANSFER, 'utf-8')
+      const injected: Reply[] = []
+      const app = new KadenaApp(injectAfterFirst(sim, INS_SIGN, LEGACY_GET_PUBKEY_ALT, injected))
+      const signature = app.sign(PATH, json).then((r: any) => r.signature as Buffer)
+      signature.catch(() => undefined)
+      await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+      await sim.navigateUntilText('.', `tmp-${m.prefix.toLowerCase()}-v7-22`, sim.startOptions.approveKeyword, true, false)
+      expect(injected.length).toEqual(1)
+      expect(injected[0].sw).toEqual('9000')
+      expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+
+  test.concurrent.each(models)('%s builds and signs a 0x24 transfer with its own path after a legacy 0x02', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const params = { ...TRANSACTIONS_TEST_CASES.find(c => c.name === 'transfer_1')!.txParams }
+      const injected: Reply[] = []
+      const app = new KadenaApp(injectAfterFirst(sim, INS_SIGN_TRANSFER, LEGACY_GET_PUBKEY_ALT, injected))
+      const req = app.signTransferTx(PATH, params as any)
+      const catcher = req.catch((e: any) => e)
+      await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+      await sim.navigateUntilText('.', `tmp-${m.prefix.toLowerCase()}-v7-24`, sim.startOptions.approveKeyword, true, false)
+      const res: any = await catcher
+      expect(injected.length).toEqual(1)
+      expect(injected[0].sw).toEqual('9000')
+      // The library builds the command with the key of PATH: it verifies only if the device built and
+      // signed it with that key too.
+      const hash = decodeHash(res.pact_command.hash)
+      expect(blake(Buffer.from(res.pact_command.cmd, 'utf-8'))).toEqual(hash)
+      expect(ed25519.verify(Buffer.from(res.pact_command.sigs[0].sig, 'hex'), hash, pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+
+  test.concurrent.each(models)(
+    '%s signs a two-APDU legacy 0x10 transfer with its own path after a 0x21 for another path',
+    async function (m) {
+      const sim = new Zemu(m.path)
+      try {
+        await sim.start({ ...defaultOptions, model: m.name })
+        // A token transfer (two APDUs long): Blind signing on (S13).
+        await sim.toggleBlindSigning()
+        const pk = Buffer.from((await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey).toString('hex')
+        const data = HANDLER_LEGACY_TEST_CASES.find(c => c.name === 'handler_legacy_len_287')!
+        const injected: Reply[] = []
+        const app = new Kda(injectAfterFirst(sim, INS_LEGACY_TRANSFER, GET_ADDR_ALT, injected))
+        const req = (app as any)['signTransferTx'](data.txParams)
+        const catcher = req.catch((e: any) => e)
+        await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+        await sim.navigateUntilText(
+          '.',
+          `tmp-${m.prefix.toLowerCase()}-v7-10`,
+          sim.startOptions.approveKeyword,
+          true,
+          false,
+          0,
+          30000,
+          true,
+          true,
+          true,
+        )
+        const res: any = await catcher
+        expect(injected.length).toEqual(1)
+        expect(injected[0].sw).toEqual('9000')
+        // The device returns the key that signed: the transfer's own, not the 0x21 one.
+        expect(res.pubkey).toEqual(pk)
+        const hash = decodeHash(res.pact_command.hash)
+        expect(ed25519.verify(Buffer.from(res.pact_command.sigs[0].sig, 'hex'), hash, Buffer.from(pk, 'hex'))).toEqual(true)
+      } finally {
+        await sim.close()
+      }
+    },
+  )
+})
+
+describe('v1.3.2 rule 2: one JSON value', function () {
+  test.concurrent.each(models)(
+    '%s refuses bytes after the value and a NUL byte (0x22 and legacy 0x03)',
+    async function (m) {
+      const shapes: Shape[] = ONE_VALUE_REFUSED.flatMap(c => [
+        {
+          label: `${c.name} 0x22`,
+          send: (t: Transport) => signJsonReply(t, Buffer.from(c.json, 'utf-8')),
+          want: { sw: '6984', msg: c.msg },
+        },
+        { label: `${c.name} 0x03`, send: (t: Transport) => legacySignJsonReply(t, Buffer.from(c.json, 'utf-8')), want: BARE_REFUSAL },
+      ])
+      expect(await refuseAll(m, shapes)).toEqual([])
+    },
+    1200000,
+  )
+
+  test.concurrent.each(models)('%s still signs a transaction followed by whitespace', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(TRAILING_WHITESPACE, 'utf-8')
+      const { signature } = await reviewAndApprove(sim, m, json)
+      expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+})
+
+describe('v1.3.2 rule 3: a signature no capability list on screen bounds is blind signing', function () {
+  test.concurrent.each(models)(
+    '%s refuses each with Blind signing off (0x22 and legacy 0x03)',
+    async function (m) {
+      let sim = new Zemu(m.path)
+      const failures: string[] = []
+      try {
+        await sim.start({ ...defaultOptions, model: m.name })
+        for (const c of UNBOUNDED) {
+          for (const legacy of [false, true]) {
+            const label = `${c.name} ${legacy ? '0x03' : '0x22'}`
+            const t = sim.getTransport()
+            const json = Buffer.from(c.json, 'utf-8')
+            // The blind-signing screen, then "Blind signing mode required" + 0x6984 (0x03 too).
+            const got = await (async () => {
+              const last = legacy ? await legacySendAllButLast(t, json) : await sendAllButLast(t, json)
+              return lastReply(sim, m, last, true)
+            })().catch((e: any) => ({ sw: 'error', msg: String(e?.message ?? e) }))
+            if (got.sw === BLIND_REFUSAL.sw && got.msg === BLIND_REFUSAL.msg) continue
+            failures.push(`${label}: got ${got.sw} "${got.msg}"`)
+            await sim.close()
+            sim = new Zemu(m.path)
+            await sim.start({ ...defaultOptions, model: m.name })
+          }
+        }
+        expect(await exchangeSW(sim.getTransport(), GET_VERSION)).toEqual('9000')
+      } finally {
+        await sim.close()
+      }
+      expect(failures).toEqual([])
+    },
+    1200000,
+  )
+
+  // With the setting on, a meta with an unknown key is reviewed with the CAUTION and signs.
+  test.concurrent.each(models)('%s reviews and signs an unrecognised meta with Blind signing on', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      await sim.toggleBlindSigning()
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(PERMUTED_META_UNKNOWN_KEY, 'utf-8')
+      const { signature } = await reviewAndApprove(sim, m, json, true)
+      expect(await seenCollapsed(sim)).toMatch(/'meta'fieldoftransactionnotrecognized/)
+      expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+})
+
+describe('v1.3.2: a meta in any key order is recognised', function () {
+  // The literal output of @kadena/client 1.18.3 for a plain coin transfer: clear-signed with Blind
+  // signing off, no CAUTION, signature verified.
+  test.concurrent.each(models)('%s clear-signs a coin transfer built by @kadena/client 1.18.3', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(KADENA_CLIENT_1_18_3_COIN_TRANSFER, 'utf-8')
+      expect(blake(json).toString('base64url')).toEqual('HY0iK3awqWBbXADTBvUAQAqpdvpZRdDdXiy0wu1ybrM')
+      const { signature } = await reviewAndApprove(sim, m, json)
+      const seen = await seenCollapsed(sim)
+      expect(seen).not.toMatch(/CAUTION|notrecognized/)
+      expect(seen).toContain('atmost2500atprice1e-8')
+      expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+
+  // The order the device's own templates and the legacy host library write still clear-signs.
+  test.concurrent.each(models)('%s still clear-signs the canonical meta order over 0x22 and 0x03', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(CONTROL_TRANSFER, 'utf-8')
+      const { signature } = await reviewAndApprove(sim, m, json)
+      expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+      expect(ed25519.verify(await legacySignJsonApproved(sim, json), blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+})
+
+describe('v1.3.2 rule 4: bytes outside printable ASCII are shown as \\xNN', function () {
+  test.concurrent.each(models)('%s shows the receiver escaped and signs the bytes sent', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(ESCAPED_RECEIVER, 'utf-8')
+      const app = new KadenaApp(sim.getTransport())
+      const req = app.sign(PATH, json)
+      await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-v132_escaped_receiver`)
+      const r: any = await req
+      expect(await seenCollapsed(sim)).toContain(INVISIBLE_RECEIVER_SHOWN)
+      expect(ed25519.verify(r.signature, blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+})
+
+describe('v1.3.2 rule 5: transfer amount precision and form', function () {
+  test.concurrent.each(models)(
+    '%s refuses more than 12 places, and a structured amount without a fraction',
+    async function (m) {
+      const structured = (amount: string, extra: Partial<TransferFields> = {}) =>
+        transferBlob({ ...TRANSFER_OK, amount, ...extra } as TransferFields, 0)
+      const token = { namespace: TOKEN_NAMESPACE, module: TOKEN_MODULE }
+      const shapes: Shape[] = [
+        ...AMOUNT_PRECISION_REFUSED.flatMap(c => [
+          { label: `${c.name} 0x22`, send: (t: Transport) => signJsonReply(t, Buffer.from(c.json, 'utf-8')), want: PARSE_REFUSAL },
+          { label: `${c.name} 0x03`, send: (t: Transport) => legacySignJsonReply(t, Buffer.from(c.json, 'utf-8')), want: BARE_REFUSAL },
+        ]),
+        ...[
+          { name: 'coin 1000', blob: structured('1000') },
+          { name: 'coin 0', blob: structured('0') },
+          { name: 'coin 13 places', blob: structured('1.0000000000001') },
+          { name: 'token 1000', blob: structured('1000', token) },
+        ].flatMap(c => [
+          { label: `structured ${c.name} 0x24`, send: (t: Transport) => signTransferReply(t, c.blob), want: PARSE_REFUSAL },
+          {
+            label: `structured ${c.name} 0x10`,
+            send: (t: Transport) => reply(t, apdu(INS_LEGACY_TRANSFER, 0, Buffer.concat([LEGACY_PATH, c.blob]))),
+            want: BARE_REFUSAL,
+          },
+        ]),
+      ]
+      expect(await refuseAll(m, shapes)).toEqual([])
+    },
+    1200000,
+  )
+
+  test.concurrent.each(models)('%s still signs an amount with 12 places', async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+      const json = Buffer.from(AMOUNT_12_PLACES, 'utf-8')
+      const { signature } = await reviewAndApprove(sim, m, json)
+      expect(await seenCollapsed(sim)).toContain('KDA1.000000000001')
+      expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+    } finally {
+      await sim.close()
+    }
+  })
+})
+
+describe('v1.3.2 rules 6 and 7: verifiers, integer gas fields', function () {
+  test.concurrent.each(models)(
+    '%s refuses a verifiers field and non-integer gasLimit, ttl, creationTime',
+    async function (m) {
+      const shapes: Shape[] = [
+        ...VERIFIERS.flatMap(c => [
+          {
+            label: `verifiers ${c.name} 0x22`,
+            send: (t: Transport) => signJsonReply(t, Buffer.from(c.json, 'utf-8')),
+            want: { sw: '6984', msg: 'Unexpected value' },
+          },
+          {
+            label: `verifiers ${c.name} 0x03`,
+            send: (t: Transport) => legacySignJsonReply(t, Buffer.from(c.json, 'utf-8')),
+            want: BARE_REFUSAL,
+          },
+        ]),
+        ...NON_INTEGER_META.flatMap(c => [
+          { label: `${c.name} 0x22`, send: (t: Transport) => signJsonReply(t, Buffer.from(c.json, 'utf-8')), want: PARSE_REFUSAL },
+          { label: `${c.name} 0x03`, send: (t: Transport) => legacySignJsonReply(t, Buffer.from(c.json, 'utf-8')), want: BARE_REFUSAL },
+        ]),
+      ]
+      expect(await refuseAll(m, shapes)).toEqual([])
+    },
+    1200000,
+  )
+})
+
+describe('v1.3.2: a touch-screen review must fit the display', function () {
+  const touch = models.filter(m => isTouchDevice(m.name))
+
+  // 22 transfers: about 400 pairs, which the display's 8-bit counts would wrap (the review would end
+  // early and sign items never shown). Refused before any screen, with Blind signing on or off.
+  test.concurrent.each(touch)(
+    '%s refuses a review far over the bound',
+    async function (m) {
+      expect(longReviewPages(22, REVIEW_VALUE_CHARS[m.name])).toBeGreaterThan(REVIEW_MAX_PAIRS)
+      const json = Buffer.from(longReview(22), 'utf-8')
+      expect(json.length).toBeLessThanOrEqual(15104)
+      const shapes: Shape[] = [
+        { label: '0x22', send: (t: Transport) => signJsonReply(t, json), want: { sw: '6984', msg: 'Value out of range' } },
+        { label: '0x03', send: (t: Transport) => legacySignJsonReply(t, json), want: BARE_REFUSAL },
+      ]
+      expect(await refuseAll(m, shapes)).toEqual([])
+      expect(await refuseAll(m, shapes, true)).toEqual([])
+    },
+    1200000,
+  )
+
+  // One pair over the bound is refused (0x22 and 0x03), whatever the Blind signing setting.
+  test.concurrent.each(touch)(
+    '%s refuses a review of exactly one pair more than the bound',
+    async function (m) {
+      const json = Buffer.from(exactReview(REVIEW_MAX_PAIRS + 1, REVIEW_VALUE_CHARS[m.name]).json, 'utf-8')
+      expect(json.length).toBeLessThanOrEqual(15104)
+      const shapes: Shape[] = [
+        { label: '0x22', send: (t: Transport) => signJsonReply(t, json), want: { sw: '6984', msg: 'Value out of range' } },
+        { label: '0x03', send: (t: Transport) => legacySignJsonReply(t, json), want: BARE_REFUSAL },
+      ]
+      expect(await refuseAll(m, shapes, true)).toEqual([])
+      expect(await refuseAll(m, shapes)).toEqual([])
+    },
+    1200000,
+  )
+
+  // A review of exactly the bound, packed at about one pair per screen and with the blind-signing
+  // warning pages, is walked to its last screen and signed: every receiver, the unverified
+  // capability and the items after it are shown, and the screen count the device announces fits.
+  test.concurrent.each(touch)(
+    '%s walks every screen of a review of exactly the bound and signs it',
+    async function (m) {
+      const { json: text, transfers } = exactReview(REVIEW_MAX_PAIRS, REVIEW_VALUE_CHARS[m.name])
+      const json = Buffer.from(text, 'utf-8')
+      expect(json.length).toBeLessThanOrEqual(15104)
+      const sim = new Zemu(m.path)
+      try {
+        await sim.start({ ...defaultOptions, model: m.name })
+        await sim.toggleBlindSigning()
+        const pk = (await new KadenaApp(sim.getTransport()).getAddressAndPubKey(PATH, false)).pubkey
+        const app = new KadenaApp(sim.getTransport())
+        const signature = app.sign(PATH, json).then((r: any) => r.signature as Buffer)
+        signature.catch(() => undefined)
+        await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+        await sim.navigateUntilText(
+          '.',
+          `tmp-${m.prefix.toLowerCase()}-bound`,
+          sim.startOptions.approveKeyword,
+          true,
+          false,
+          0,
+          900000,
+          true,
+          true,
+          true,
+        )
+        const texts: string[] = (await sim.getEvents()).map((e: any) => e.text)
+        // As many receivers were walked as were sent (first page of each, or its only page).
+        expect(texts.filter(t => /^To( \(1\/\d+\))?$/.test(t)).length).toEqual(transfers)
+        expect(texts.some(t => t.startsWith('Unknown Capability'))).toEqual(true)
+        expect(texts).toContain('On Chain')
+        expect(texts).toContain('Using Gas')
+        // The screen counter ("i of n"; the emulator may report a three-digit total in two pieces, so
+        // the largest one seen is the total): at most 255 screens, and the walk reached the last.
+        const counters = texts.map(t => /^(\d+) of (\d+)$/.exec(t)).filter(c => c !== null) as RegExpExecArray[]
+        const screens = Math.max(...counters.map(c => Number(c[2])))
+        expect(screens).toBeLessThanOrEqual(255)
+        expect(screens).toBeGreaterThan(REVIEW_MAX_PAIRS - 2 * transfers - 9)
+        expect(Math.max(...counters.map(c => Number(c[1])))).toEqual(screens)
+        console.log(`REVIEW_BOUND ${m.name}: ${REVIEW_MAX_PAIRS} pairs, ${transfers} transfers, ${screens} screens, ${json.length} bytes`)
+        expect(ed25519.verify(await signature, blake(json), pk)).toEqual(true)
+      } finally {
+        await sim.close()
+      }
+    },
+    1800000,
   )
 })
