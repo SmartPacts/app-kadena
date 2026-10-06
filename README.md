@@ -33,7 +33,7 @@ What changes is listed plainly under [Differences from the C implementation](#di
 
 *Once the app is approved by Ledger, it will be available in their app store (Ledger Live).*
 
-Kadena is currently not offered in Ledger's catalog. Released versions up to v1.3.1 are the
+Kadena is currently not offered in Ledger's catalog. Released versions up to v1.3.2 are the
 C implementation; see the [release page](https://github.com/SmartPacts/app-kadena/releases) and the notes
 there for sideloading on a Nano S+. A retail Nano X refuses sideloaded apps. The
 first-generation Nano S is not supported.
