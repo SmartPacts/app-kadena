@@ -1,6 +1,6 @@
 # Kadena Ledger app — security review (v2.0.0, Rust, API_LEVEL 26)
 
-v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.37.0), NBGL on all five
+v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.38.0), NBGL on all five
 devices (Nano S+, Nano X, Stax, Flex, Apex P). This document describes v2.0.0 only; the C app (v1.3.x) is on the
 `c-v1.3` branch.
 
@@ -147,6 +147,30 @@ bytes; a token transfer is refused with Blind signing OFF ("Cannot clear-sign") 
 with it ON. On the Nano S+ the key equals the one the C app (v1.3.1) derives at the same path. Nano X, Stax
 and Flex: emulator only.
 
+### After the hardware runs: V27, SDK 1.38.0 and the app icon
+
+Three changes were made after the hardware runs above, which were on the previous build (its ELFs are no longer
+the release binaries listed below):
+
+- V27 (`items.rs` `validate_meta_field`): the `meta` keys are accepted in any order, each once, with no other
+  key, and with the presence rule the fixed order implied. Every `meta` value the review shows or checks
+  (chain, gas limit and price, maximum fee, paying account, creation time and ttl, the integer checks of V15) is
+  read by its name. Before it, the key order `@kadena/client` writes made a plain coin transfer a CAUTION, which
+  V11 turns into a Blind-signing requirement. Pinned by the literal `@kadena/client` 1.18.3 output (host test and
+  Ragger test on every device, clear-signed with Blind signing OFF and the signature verified; the host test
+  fails on the previous build) and by permutations with an unknown key, which still need Blind signing.
+- The app icon is now the Kadena Community Edition mark; only the goldens of the pages that draw it changed
+  (in each, the differing pixels lie within the icon's box).
+- `ledger_device_sdk` 1.37.0 to 1.38.0 (Ledger's guidelines enforcer requires the current crate). The
+  crate's changes between the two versions: the streaming review calls take the `Comm` (an API change, the
+  only code change here); while a command is in flight only BOLOS GET_VERSION is answered inline and other
+  BOLOS APDUs are refused; APDUs are refused while the device is locked; the streaming Ed25519 signer (not used
+  by this app) is hardened. Nothing changes in key derivation, settings storage or the heap. The C SDK the
+  image provides (v26.6.5, API level 26) is unchanged.
+
+The differential (below) was not run again for these two changes: its corpus now holds three V27 cases and
+`compare.py` names V27, but the run in the report is of the previous build.
+
 ### Review of the C v1.3.1 patch, carried into v2.0.0
 
 | # | Severity | Issue (inherited from v1.3.0) | Fix | Evidence |
@@ -197,8 +221,9 @@ command) are listed in `docs/APDUSPEC.md`.
   | Apex P (`df65483`) | 8192 | 2796 | 4156 |
 
 - **Differential** (*differential*): 486 cases, 1603 APDUs per device, all five devices; every difference
-  from v1.3.0 is one of V1-V26 or the version bytes (`tools/differential/report.md`). Run with the release ELFs
-  below (`71cf734`), after the first hardware run's display changes (H-1, H-2) and R7-1.
+  from v1.3.0 is one of V1-V26 or the version bytes (`tools/differential/report.md`). Run with the previous
+  release ELFs (`71cf734`), after the first hardware run's display changes (H-1, H-2) and R7-1; not run again
+  for V27 and SDK 1.38.0 (see above).
 - **Refusal tests check the whole reply** (*emulator*): every Ragger test of a refusal compares the status
   word and the response data together, so a refusal that has a message is checked word for word, and a bare
   one (legacy commands) is checked to carry none.
@@ -218,13 +243,16 @@ command) are listed in `docs/APDUSPEC.md`.
 
 ### Release binaries (v2.0.0, `cargo ledger build`, pinned `ledger-app-dev-tools` image)
 
+Built twice from fresh trees at `/app`, byte-identical; they include V27, SDK 1.38.0 and the new app icon. The
+hardware runs above were on the previous build.
+
 | device | ELF sha256 |
 |---|---|
-| Nano S+ | `9a10952d2b370371786843fca54a728b8f4658452bf9a3ac6f4601c42ba9239f` |
-| Nano X | `d079e5ee94536cd7bd4f161d547bb36648b1ebfa26933c46ad769dce3de95b2a` |
-| Stax | `d429ca200c191f6765741f3bde9324530223beb49ed5862b9889c64bb76ee896` |
-| Flex | `765cefd84c52e80c9fff035781bffdcd205ccf17c9578512f5daa936994ec6cb` |
-| Apex P | `05c44b40d92e225327fa11e304f205411aa4a7999bb99253162cfe020ddf58d6` |
+| Nano S+ | `21e7cc0c3ac3722f97cbd408ebec836f7da389a90743901e3454cd04299e1d95` |
+| Nano X | `467dd596625088d4c689d4cd18bc48eef8556944fc5ddee7e14e0695bb24a854` |
+| Stax | `37fd7ec2be11cf484e6a38b49a88817dd37afb5c882145e6057991e497976c36` |
+| Flex | `f4c5da99efb26e982670da77b7f365407c36a3098105a4a0614ef5556d50e320` |
+| Apex P | `402a3408f3ae6d91737125a14782f4223e46feeeb81a1e233e2d9571b180c3d9` |
 
 ## Known limits
 

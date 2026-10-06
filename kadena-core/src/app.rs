@@ -39,7 +39,8 @@
 //! * V23 a structured transfer (0x24, 0x10) of a token (namespace and module
 //!   given) is blind signing: while its `<ns>.<module>.TRANSFER` capability is
 //!   in scope, the module's own code can use the key;
-//! * V24 a coin transfer amount is a bare number `digits(.digits)?` or `{"decimal":"<it>"}`.
+//! * V24 a coin transfer amount is a bare number `digits(.digits)?` or `{"decimal":"<it>"}`;
+//! * V27 the `meta` keys are recognised in any order (see `items::validate_meta_field`).
 
 use crate::error::ParserError;
 use crate::items::{ItemCrypto, ItemsError, TxType, TITLE_BUF, VALUE_BUF};

@@ -55,6 +55,11 @@ Rust side shows the designed behaviour:
   V18      an object key holds a backslash (anywhere), or a capability name of
            the device's entry does: Rust "Unexpected characters" 0x6984 (bare on
            0x03). A literal duplicate key in a nested object is V4.
+  V27      the meta keys are the canonical ones in another order: the C app
+           showed the CAUTION (and signed); the Rust side reviews without it when
+           creationTime, ttl, gasLimit, chainId and gasPrice are all there, and
+           refuses "Unrecognized error code" 0x6984 (bare on 0x03) when only the
+           first one to four are.
 Any case (tagged or not) may be explained by V9, V11 or V12, since those follow
 from the input and the C screens alone.
 Anything else is UNEXPLAINED and fails the run.
@@ -500,6 +505,8 @@ def explain_json(case, c, r, device):
     if r3:
         tag, code = r3
         return tag if last == ("6984" if legacy else code) else None
+    if v27_meta(raw) == "refused":
+        return "V27" if last == ("6984" if legacy else UNRECOGNIZED) else None
     if case["session"] != "default" or last != BLIND or any(r["markers"].values()):
         return None
     flags = device_caps(raw, pk)
@@ -515,7 +522,36 @@ def explain_json(case, c, r, device):
 
 
 UNEXPECTED_VALUE = "Unexpected value".encode().hex() + "6984"
+UNRECOGNIZED = b"Unrecognized error code".hex() + "6984"
 META_KEYS = [b"creationTime", b"ttl", b"gasLimit", b"chainId", b"gasPrice", b"sender"]
+
+
+def c_meta_recognised(keys):
+    """C v1.3.0 parser_validateMetaField: the canonical keys, in canonical order."""
+    return len(keys) <= 6 and keys == META_KEYS[:len(keys)]
+
+
+def rust_meta_recognised(keys):
+    """V27: the canonical keys in any order, each once, no other key; a key only
+    with every key before it in META_KEYS."""
+    if len(keys) > 6 or len(set(keys)) != len(keys) or not set(keys) <= set(META_KEYS):
+        return False
+    return set(keys) == set(META_KEYS[:len(keys)])
+
+
+def v27_meta(raw):
+    """'review' or 'refused' when only V27 recognises the JSON's meta, else None."""
+    toks = jsmn(raw)
+    if not toks:
+        return None
+    j = Json(raw, toks)
+    meta = j.obj_get(0, b"meta")
+    if meta is None or j.tok(meta)[0] != 1:
+        return None
+    keys = [j.span(k) for k in j._pairs(meta)]
+    if c_meta_recognised(keys) or not rust_meta_recognised(keys):
+        return None
+    return "review" if len(keys) >= 5 else "refused"
 
 
 AMOUNT = re.compile(rb"(0|[1-9][0-9]*)(\.[0-9]{1,12})?")
@@ -579,7 +615,7 @@ def round3_refusal(raw, pk):
     meta = j.obj_get(0, b"meta")
     if meta is not None and j.tok(meta)[0] == 1:
         keys = [j.span(k) for k in j._pairs(meta)]
-        if len(keys) <= 6 and keys == META_KEYS[:len(keys)]:
+        if rust_meta_recognised(keys):
             for f in (b"creationTime", b"ttl", b"gasLimit"):
                 v = j.obj_get(meta, f)
                 if v is not None and (j.tok(v)[0] != 8 or not re.fullmatch(rb"[0-9]+", j.span(v))):
@@ -704,6 +740,12 @@ def explain_tagged_base(case, c, r):
                     and not r["markers"]["Unscop"] and not c["markers"]["Key not in"]):
                 # F6: the same scoped signature, titled "Key not in transfer".
                 return "V3"
+            inp = json_input(case)
+            if (c["markers"].get("CAUTION") and not r["markers"].get("CAUTION")
+                    and all(r["markers"][k] for k in diff if k != "CAUTION")
+                    and inp and v27_meta(inp[0]) == "review"):
+                # V27: the same transaction, without the meta CAUTION.
+                return "V27"
             if all(r["markers"][k] for k in diff):
                 # Only screens differ, and only by what the Rust side adds.
                 # (A scoped signature's title is "Key not in transfer" since F6.)

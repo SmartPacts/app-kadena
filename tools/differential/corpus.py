@@ -463,6 +463,22 @@ def cases():
         "V15", markers=["15000000"])
     add("V15 structured transfer exponent gas price",
         modern(0x24, transfer_body(0, dict(T1, gas_price="1e+2", gas_limit="150000"))), "V15", markers=["15000000"])
+    # V27: a plain coin transfer exactly as @kadena/client 1.18.3 writes it (meta keys in the library's
+    # order), and the keys of a four-key canonical prefix in another order.
+    kadena_client = (
+        '{"payload":{"exec":{"code":"(coin.transfer \\"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d2'
+        '8f2cead74ad\\" \\"k:9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42\\" 1.0)","data":{}'
+        '}},"nonce":"kjs:nonce:1791110121913","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f2'
+        '8b9796e792d28f2cead74ad","scheme":"ED25519","clist":[{"name":"coin.TRANSFER","args":["k:de12b5e16b93'
+        'fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","k:9790d119589a26114e1a42d92598b3f632551c56681'
+        '9ec48e0e8c54dae6ebb42",{"decimal":"1.0"}]},{"name":"coin.GAS","args":[]}]}],"meta":{"gasLimit":2500,'
+        '"gasPrice":1e-8,"sender":"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","ttl":'
+        '900,"creationTime":1791110121,"chainId":"0"},"networkId":"mainnet01"}'
+    )
+    add("V27 @kadena/client 1.18.3 coin transfer", modern(0x22, kadena_client.encode()), "V27")
+    add("V27 legacy @kadena/client 1.18.3 coin transfer", legacy_json(kadena_client.encode()), "V27")
+    add("V27 permuted four-key meta", modern(0x22, signers_cmd("[" + entry(D, "[" + xfer("k:" + D) + "]") + "]",
+        meta='{"chainId":"0","gasLimit":600,"ttl":28800,"creationTime":0}')), "V27")
     add("V16 vanity receiver", modern(0x22, signers_cmd("[" + entry(D, "[" + xfer("k:" + D, to="bob") + "]") + "]")),
         "V16", markers=["principal"])
     add("V20 other module capability",

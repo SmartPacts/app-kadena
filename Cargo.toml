@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Kadena app for Ledger devices"
 
 [dependencies]
-ledger_device_sdk = { version = "=1.37.0", features = ["io_new", "sys"] }
+ledger_device_sdk = { version = "=1.38.0", features = ["io_new", "sys"] }
 kadena-core = { path = "kadena-core" }
 
 [features]

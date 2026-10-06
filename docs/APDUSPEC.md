@@ -39,6 +39,11 @@ The general structure of commands and responses is as follows:
 | 0x6F00      | Unknown                 |
 | 0x6F01      | Sign / verify error     |
 | 0x9000      | Success                 |
+| 0x5515      | Device is locked        |
+
+While the device is PIN-locked, Ledger's Rust SDK (since 1.37.1) answers every APDU with 0x5515 before the
+app sees it. So the app's own 0x6986 for a command sent without a validated PIN, and a LOCKED byte other than
+0x00 in the GET_VERSION reply, cannot be observed on a device.
 
 ---
 
@@ -95,7 +100,7 @@ See [Legacy Command definition](#legacy-command-definition) for more details.
 | MAJOR      | byte (2) | Version Major    | 0..65535                        |
 | MINOR      | byte (2) | Version Minor    | 0..65535                        |
 | PATCH      | byte (2) | Version Patch    | 0..65535                        |
-| LOCKED     | byte (1) | Device is locked | 0x00 when the app is usable     |
+| LOCKED     | byte (1) | Device is locked | 0x00 (a locked device answers 0x5515) |
 | TARGET_ID  | byte (4) | Target Id        |                                 |
 | SW1-SW2    | byte (2) | Return code      | see list of return codes        |
 
@@ -671,4 +676,15 @@ except for these intended changes:
     fractional part (`1000.0`, not `1000`), since it is pasted into the code as is and Pact refuses an integer
     for `amount:decimal`; otherwise `Unexpected characters` 0x6984 (bare on 0x10). The C app signed such a
     transfer, which then failed on chain.
+27. **`meta` keys in any order:** `meta` is recognised when its keys are `creationTime`, `ttl`, `gasLimit`,
+    `chainId`, `gasPrice` and optionally `sender`, in any order, each once, with no other key (any other key,
+    more than six keys, a key of 40 or more bytes, a `null` or missing `meta`: the CAUTION, as before). The
+    presence rule is the one the C app's fixed order implied: a key is accepted only with every key before it
+    in that list, so any set of keys gives the outcome its canonical order gives (the first one to four keys,
+    or none, in any order: `Unrecognized error code` 0x6984, bare on 0x03; any other incomplete set: the
+    CAUTION). For the C app v1.3.0 that refusal held for the canonical order only: the same keys in another
+    order were shown with the CAUTION and signed. Every `meta` value the
+    review shows or checks is read by its name. The C app v1.3.0 accepted only that order and showed any
+    other with the CAUTION; `@kadena/client` writes `gasLimit`, `gasPrice`, `sender`, `ttl`, `creationTime`,
+    `chainId`, so with 11 its plain coin transfers would have needed blind signing. They are clear-signed.
     Each WARNING of 14, 16, 20 and 23 is one review item; the review holds at most 99 items, as in the C app.

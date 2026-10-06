@@ -388,7 +388,7 @@ mod nano {
 /// (hash signing, and V11 JSON) starts with Ledger's blind-signing warning; both
 /// kinds show every item, batch after batch (F7).
 pub fn review_tx<const T: usize, P: Platform>(
-    _comm: &mut Comm,
+    comm: &mut Comm,
     app: &App<T>,
     p: &P,
     blind: bool,
@@ -397,7 +397,7 @@ pub fn review_tx<const T: usize, P: Platform>(
     if blind {
         review = review.blind();
     }
-    if !review.start("Review transaction", None) {
+    if !review.start(comm, "Review transaction", None) {
         return false;
     }
     let mut next = 0;
@@ -420,15 +420,18 @@ pub fn review_tx<const T: usize, P: Platform>(
         // which the C app never offered. The SDK marks it deprecated only in
         // favour of that skippable variant.
         #[allow(deprecated)]
-        if !review.continue_review(&fields) {
+        if !review.continue_review(comm, &fields) {
             return false;
         }
     }
-    review.finish(if blind {
-        "Accept risk and sign transaction?"
-    } else {
-        "Sign transaction?"
-    })
+    review.finish(
+        comm,
+        if blind {
+            "Accept risk and sign transaction?"
+        } else {
+            "Sign transaction?"
+        },
+    )
 }
 
 /// Heap measurement build only (`--features heap-probe`, never shipped): records

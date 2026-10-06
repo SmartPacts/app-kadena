@@ -175,6 +175,54 @@ def test_v11_scoped_json_is_clear_signed_with_blind_signing_on(kda):
     assert not any("Blind signing" in t for t in seen)
 
 
+# ---- V27: meta keys in any order --------------------------------------------------
+
+# A plain coin transfer exactly as @kadena/client 1.18.3 writes it
+# (Pact.builder.execution(...).addSigner(...).setMeta({chainId, senderAccount})
+# .setNetworkId("mainnet01").createTransaction()): meta keys in the library's order,
+# the amount as {"decimal":"1.0"}, gasPrice 1e-8. Request key
+# HY0iK3awqWBbXADTBvUAQAqpdvpZRdDdXiy0wu1ybrM.
+KADENA_CLIENT_1_18_3_COIN_TRANSFER = (
+    b'{"payload":{"exec":{"code":"(coin.transfer \\"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d2'
+    b'8f2cead74ad\\" \\"k:9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42\\" 1.0)","data":{}'
+    b'}},"nonce":"kjs:nonce:1791110121913","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f2'
+    b'8b9796e792d28f2cead74ad","scheme":"ED25519","clist":[{"name":"coin.TRANSFER","args":["k:de12b5e16b93'
+    b'fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","k:9790d119589a26114e1a42d92598b3f632551c56681'
+    b'9ec48e0e8c54dae6ebb42",{"decimal":"1.0"}]},{"name":"coin.GAS","args":[]}]}],"meta":{"gasLimit":2500,'
+    b'"gasPrice":1e-8,"sender":"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","ttl":'
+    b'900,"creationTime":1791110121,"chainId":"0"},"networkId":"mainnet01"}'
+)
+
+PERMUTED_META = '{"gasPrice":1.0e-6,"sender":"k:' + EXPECTED_PK + '","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0}'
+
+
+def test_v27_kadena_client_coin_transfer_clear_signs(kda):
+    tx = KADENA_CLIENT_1_18_3_COIN_TRANSFER
+    # Blind signing OFF (the installed default): a clear-signing review, no CAUTION.
+    with kda.pending(send_last(kda, tx)):
+        seen = kda.review_texts()
+    assert kda.result() == (0x6986, b"")
+    assert not shows(seen, "CAUTION") and not any("Blind signing" in t for t in seen), seen
+    assert said(seen, "KDA 1.0") and said(seen, "at most 2500 at price 1e-8"), seen
+    with kda.pending(send_last(kda, tx)):
+        kda.approve_tx()
+    sw, sig = kda.result()
+    assert sw == SW_OK
+    verify(EXPECTED_PK, blake2b(tx), sig)
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [PERMUTED_META[:-1] + ',"payer":"x"}', PERMUTED_META.replace('"sender"', '"payer"')],
+    ids=["unknown-seventh-key", "unknown-key-for-sender"],
+)
+def test_v27_unknown_meta_key_still_needs_blind_signing(kda, meta):
+    tx = command("[" + entry(EXPECTED_PK, "[" + transfer_cap("k:" + EXPECTED_PK) + "]") + "]", meta=meta)
+    with kda.pending(send_last(kda, tx)):
+        kda.dismiss_blind_signing_required()
+    assert kda.result() == (0x6984, BLIND_REQUIRED)
+
+
 # ---- V12 -------------------------------------------------------------------------
 
 

@@ -315,10 +315,26 @@ fn meta_rules() {
     let items = items_of(base.as_bytes(), false).unwrap();
     assert!(items.contains(&("On Chain".into(), "0".into())));
     assert!(items.contains(&("Using Gas".into(), "at most 600 at price 1.0e-6".into())));
-    // Out of order, too many keys, a key >= 40 chars, null, missing: CAUTION.
+    // V27: the keys in any order are recognised (C showed a CAUTION unless the
+    // order was creationTime, ttl, gasLimit, chainId, gasPrice, sender).
     for meta in [
         r#"{"ttl":28800,"creationTime":0,"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s"}"#,
+        r#"{"gasPrice":1.0e-6,"sender":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0}"#,
+        // sender is optional.
+        r#"{"chainId":"0","gasPrice":1.0e-6,"gasLimit":600,"ttl":28800,"creationTime":0}"#,
+    ] {
+        let items = items_of(base.replace(META, meta).as_bytes(), false).unwrap();
+        assert!(items.contains(&("On Chain".into(), "0".into())), "{meta}");
+        assert!(!items.iter().any(|(k, _)| k == "CAUTION"), "{meta}");
+    }
+    // An unknown key (added, or in place of a known one), too many keys, a key
+    // >= 40 chars, a key without the ones before it (creationTime, ttl), null,
+    // missing: CAUTION.
+    for meta in [
         r#"{"creationTime":0,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s","x":1}"#,
+        r#"{"gasPrice":1.0e-6,"sender":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0,"x":1}"#,
+        r#"{"gasPrice":1.0e-6,"payer":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0}"#,
+        r#"{"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s"}"#,
         r#"{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":0}"#,
         "null",
     ] {
@@ -337,14 +353,57 @@ fn meta_rules() {
     assert!(blind_items_of(j.as_bytes())
         .iter()
         .any(|(k, _)| k == "CAUTION"));
-    // A canonical prefix of fewer than 5 keys is rejected (chainId / gasPrice read).
+    // The keys of a canonical prefix of fewer than 5 keys, in any order, are
+    // rejected (chainId / gasPrice read).
     for meta in [
         r#"{"creationTime":0,"ttl":1,"gasLimit":2,"chainId":"0"}"#,
+        r#"{"chainId":"0","gasLimit":2,"ttl":1,"creationTime":0}"#,
+        r#"{"ttl":1,"creationTime":0}"#,
         r#"{"creationTime":0}"#,
     ] {
         let j = base.replace(META, meta);
         assert_eq!(err_msg(&j), (msg(UNRECOGNIZED), 0x6984), "{meta}");
     }
+}
+
+/// A plain coin transfer exactly as @kadena/client 1.18.3 writes it
+/// (Pact.builder.execution(...).addSigner(...).setMeta({ chainId, senderAccount })
+/// .setNetworkId("mainnet01").createTransaction()): `meta` keys in the library's
+/// order (gasLimit, gasPrice, sender, ttl, creationTime, chainId), the amount as
+/// {"decimal":"1.0"}, gasPrice 1e-8. Its request key is
+/// HY0iK3awqWBbXADTBvUAQAqpdvpZRdDdXiy0wu1ybrM.
+pub const KADENA_CLIENT_1_18_3_COIN_TRANSFER: &str = r#"{"payload":{"exec":{"code":"(coin.transfer \"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad\" \"k:9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42\" 1.0)","data":{}}},"nonce":"kjs:nonce:1791110121913","signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","scheme":"ED25519","clist":[{"name":"coin.TRANSFER","args":["k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","k:9790d119589a26114e1a42d92598b3f632551c566819ec48e0e8c54dae6ebb42",{"decimal":"1.0"}]},{"name":"coin.GAS","args":[]}]}],"meta":{"gasLimit":2500,"gasPrice":1e-8,"sender":"k:de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","ttl":900,"creationTime":1791110121,"chainId":"0"},"networkId":"mainnet01"}"#;
+
+/// V27: the library's transaction is clear-signed with blind signing OFF.
+#[test]
+fn v27_kadena_client_coin_transfer_clear_signs() {
+    let json = KADENA_CLIENT_1_18_3_COIN_TRANSFER.as_bytes();
+    let mut app = new_app();
+    let mut p = Mock::default();
+    let (blind, items) = review_flagged::<768>(&mut app, &mut p, json).expect("a review");
+    assert!(!blind, "clear-signing review");
+    assert!(!items.iter().any(|(k, _)| k == "CAUTION"), "{items:?}");
+    assert!(
+        items.contains(&("Amount".into(), "KDA 1.0".into())),
+        "{items:?}"
+    );
+    assert!(
+        items.contains(&("On Chain".into(), "0".into())),
+        "{items:?}"
+    );
+    assert!(
+        items.contains(&("Using Gas".into(), "at most 2500 at price 1e-8".into())),
+        "{items:?}"
+    );
+    // Approved: the signature is over blake2b-256 of the exact bytes.
+    let mut app = new_app();
+    let mut p = Mock::default();
+    let r = modern_sign(&mut app, &mut p, 0x22, &STD_PATH, json, true);
+    assert_eq!(
+        (r.sw, r.reviewed, r.blind_screen, r.data.len()),
+        (0x9000, true, false, 64)
+    );
+    assert!(Mock::verify(&STD_PATH, &blake2b(json), &r.data));
 }
 
 #[test]

@@ -212,21 +212,24 @@ pub(crate) fn hex_lower(src: &[u8], out: &mut [u8]) {
     }
 }
 
-/// The six canonical `meta` keys, in order (parser_impl.c `keywords[]`).
-fn meta_keyword(i: u16) -> &'static [u8] {
-    match i {
-        0 => b"creationTime",
-        1 => b"ttl",
-        2 => b"gasLimit",
-        3 => b"chainId",
-        4 => b"gasPrice",
-        5 => b"sender",
-        // Never read: `count > 6` is refused first.
-        _ => b"",
-    }
-}
+/// The six `meta` keys, in canonical order (parser_impl.c `keywords[]`).
+const META_KEYWORDS: [&[u8]; 6] = [
+    b"creationTime",
+    b"ttl",
+    b"gasLimit",
+    b"chainId",
+    b"gasPrice",
+    b"sender",
+];
 
-/// `parser_validateMetaField` (parser_impl.c:161-204).
+/// `parser_validateMetaField` (parser_impl.c:161-204), with divergence V27:
+/// the keys may come in any order (C required the order above, although every
+/// value is read by name, so the order @kadena/client writes was a CAUTION),
+/// each at most once, and no other key. The presence rule is the one the fixed
+/// order implied: a key is accepted only with every key before it in
+/// [`META_KEYWORDS`], so any set of keys gives the outcome its canonical order
+/// gave (a reviewed transaction carries creationTime, ttl, gasLimit, chainId and
+/// gasPrice; sender is optional).
 pub fn validate_meta_field(json: &Json) -> Result<(), ParserError> {
     let mut meta = 0u16;
     json.object_get_value(0, b"meta", &mut meta)?;
@@ -238,6 +241,7 @@ pub fn validate_meta_field(json: &Json) -> Result<(), ParserError> {
     if count > 6 {
         return Err(ParserError::InvalidMetaField);
     }
+    let mut present = 0u8;
     for i in 0..count {
         let mut k = 0u16;
         // The C code ignores this call's result.
@@ -247,9 +251,15 @@ pub fn validate_meta_field(json: &Json) -> Result<(), ParserError> {
         if len >= 40 {
             return Err(ParserError::InvalidMetaField);
         }
-        if json.span(k) != meta_keyword(i) {
-            return Err(ParserError::InvalidMetaField);
+        let name = json.span(k);
+        match META_KEYWORDS.iter().position(|kw| *kw == name) {
+            Some(p) if present & (1 << p) == 0 => present |= 1 << p,
+            _ => return Err(ParserError::InvalidMetaField),
         }
+    }
+    // A canonical prefix: no key without every key before it.
+    if present & present.wrapping_add(1) != 0 {
+        return Err(ParserError::InvalidMetaField);
     }
     Ok(())
 }

@@ -4,8 +4,10 @@ All notable changes to the Kadena Ledger app (this maintained continuation) are 
 
 ## [2.0.0] — unreleased
 
-The app is rewritten in Rust on Ledger's Rust SDK (`ledger_device_sdk` 1.37.0), with the NBGL
+The app is rewritten in Rust on Ledger's Rust SDK (`ledger_device_sdk` 1.38.0), with the NBGL
 interface on every device. The C implementation (v1.3.x) is on the `c-v1.3` branch and in the earlier history of this one.
+
+The app icon is now the Kadena Community Edition mark.
 
 ### Compatibility
 
@@ -99,6 +101,15 @@ interface on every device. The C implementation (v1.3.x) is on the `c-v1.3` bran
   Decision: more than 12 places, in host JSON or a coin structured transfer, is refused.
 - V26 — a structured transfer amount needs a fractional part. Context: the amount is pasted into the code as
   is, and Pact refuses `1000` for `amount:decimal`, so the transaction failed on chain (fifth review R5-3).
+- V27 — the `meta` keys in any order. Context: v1.3.0 recognised `meta` only with its keys in the order
+  `creationTime`, `ttl`, `gasLimit`, `chainId`, `gasPrice`, `sender`, although it reads every value by name;
+  `@kadena/client` (1.18.3) writes `gasLimit`, `gasPrice`, `sender`, `ttl`, `creationTime`, `chainId`, so with
+  V11 its plain coin transfers would have needed Blind signing. Decision: the keys are accepted in any order,
+  each once, with no other key; the presence rule is the one the fixed order implied (a reviewed transaction
+  carries `creationTime`, `ttl`, `gasLimit`, `chainId` and `gasPrice`; `sender` is optional). Such a
+  transaction is clear-signed without the CAUTION. A partial set made of the first one to four keys is refused
+  in any order ("Unrecognized error code", bare on 0x03); v1.3.0 refused it only in the canonical order and
+  showed it in another order with the CAUTION.
 - A capability name whose "name: <name>, " does not fit the 300-byte value is refused at once (found by the
   fuzzer: a 293-299 byte name was cut, then refused one check later).
 - The "Key not in transfer" title replaces "Unscoped Signer" for a scoped signature whose transfers do not name
@@ -129,6 +140,135 @@ interface on every device. The C implementation (v1.3.x) is on the `c-v1.3` bran
   review within the 8 KiB heap with printable and with non-printable values.
 - Flash buffers are written through their own cell pointers, and every access to the flash store, the
   settings included, goes through one raw pointer: the app no longer creates overlapping references to it.
+
+## [1.3.2] — 2026-10-04
+
+Security patch. It closes the signing-integrity gaps that v1.3.1 left for a later release: how a
+signing command is split into APDUs, bytes signed but never parsed, signatures no capability list
+bounds, characters a screen cannot show, and three transaction fields the device did not check.
+Each fix makes the device refuse something it signed before, or (for invisible characters and the
+order of `meta` keys) show it differently; nothing that v1.3.1 refused is now accepted.
+
+The app icon is now the Kadena Community Edition mark.
+
+### What a malicious host could do, and what the device does now
+
+- **Finish one signing command as another, or change the key that signs.** The modern and legacy
+  signing commands each kept their own record of an open multi-APDU command, and the device read
+  the buffer according to the INS of the last APDU. A host could send a JSON transaction under 0x22
+  and finish it with 0x23, so the device signed those bytes as a raw hash; or interleave legacy and
+  modern APDUs into one buffer. An address command between the chunks (0x21, legacy 0x01 or 0x02)
+  also changed the derivation path, so the key that signed was not the one the signing command
+  named. The device now keeps one stream for both families: every APDU of a stream must carry the
+  INS of its first APDU, or it is refused (0x6987) and the stream is closed; a modern APDU with
+  P1 = 1 or 2 and no open stream of its INS is refused (0x6987); a modern first APDU closes any open
+  stream. The path given by the signing command is the one that signs, whatever address commands
+  come between its APDUs.
+- **Sign bytes the device never parsed.** The JSON reader stopped at a NUL byte, and after the first
+  JSON value, but the device signed the whole buffer. Anything after a NUL, or after the
+  transaction's closing brace, was signed unseen. A NUL byte anywhere is now refused ("Unexpected
+  characters", 0x6984), and so is anything but whitespace after the transaction ("Unexpected
+  unparsed bytes", 0x6984); bare 0x6984 on the legacy 0x03.
+- **Get an unbounded signature clear-signed.** A JSON transaction whose signer entry has no
+  capability list (missing, `null` or `[]`), or whose `meta` field the device does not recognise,
+  was signed with only a warning on screen, although nothing the review shows limits the
+  signature. These now need the Blind signing setting: with it off the device refuses ("Blind
+  signing mode required", 0x6984, on 0x03 too); with it on the review shows the same items as
+  before, opened by the blind-signing warning and closed by the "accept risk" approval. A review
+  with the "too large to display" warning needs the setting too (in this app that warning already
+  came with a capability that needed it).
+- **Hide characters in a shown value.** An account name may contain characters a font draws as
+  nothing or as a space (C1 controls, a no-break space, a soft hyphen), so two different accounts
+  could look the same on screen. Every byte of a displayed value outside printable ASCII is now
+  shown as `\xNN`. The signed bytes do not change.
+- **Pass an amount the network reads differently.** A `coin.TRANSFER` / `coin.TRANSFER_XCHAIN`
+  amount may now have at most 12 fractional digits (coin's precision), in both accepted forms and
+  in a structured `coin` transfer; the network rounds a longer number, so the amount shown would
+  not be the one moved. A structured transfer's amount (0x24, 0x10) must have a fractional part
+  (`1000.0`, not `1000`): it is pasted into the Pact code, where an integer is not a decimal and the
+  transfer fails on chain. Both are refused with "Unexpected characters" (0x6984; bare on the legacy
+  commands). The `decimal` key of the object form must be a quoted string, as before.
+- **Grant capabilities the review cannot show.** A command with a `verifiers` field (Pact 5
+  signature verifiers) is refused ("Unexpected value", 0x6984; bare on 0x03).
+- **Use a fractional gas field.** In a recognised `meta`, `gasLimit`, `ttl` and `creationTime` must
+  be plain digits; the network reads them as integers. Anything else is refused ("Unexpected
+  characters", 0x6984; bare on 0x03).
+- **`meta` keys in any order.** The device recognised `meta` only with its keys in the order
+  `creationTime`, `ttl`, `gasLimit`, `chainId`, `gasPrice`, `sender`, and showed any other order
+  with the "'meta' field of transaction not recognized" caution, although it reads every `meta`
+  value by its name. `@kadena/client` (checked with version 1.18.3) writes `gasLimit`, `gasPrice`,
+  `sender`, `ttl`, `creationTime`, `chainId`, so with the rule above its plain coin transfers would
+  have needed Blind signing. `meta` is now recognised when its keys are `creationTime`, `ttl`,
+  `gasLimit`, `chainId`, `gasPrice` and optionally `sender`, in any order, each once, and no other
+  key; such a transaction is clear-signed. With fewer keys the order does not matter either: a set
+  made of the first one to four of those names (or none) is refused ("Unrecognized error code",
+  0x6984; bare on 0x03), in any order, and any other set, an unknown key or a seventh key is shown
+  with the caution and needs Blind signing.
+- **Hide part of a long review on a touch screen.** On Stax, Flex and Apex P the review shows every
+  page of every item as one pair, and counts the pairs, and then its screens, in 8 bits. Past the
+  count the review wraps: it ends early, and items never shown are signed. v1.3.1 could already be
+  made to do this on Apex P in a blind-signing review (46 unverified capabilities with long names:
+  282 pairs, of which the device showed the first few), and with values shown as `\xNN` a
+  clear-signed transaction could do it on all three. A transaction whose review would hold more
+  than 253 pairs is now refused ("Value out of range", 0x6984; bare on 0x03), whatever the
+  settings; 253 pairs is the most that fits both counts. The Nano review shows one item at a time
+  and has no such limit.
+
+### Compatibility
+
+- A plain coin transfer built with `@kadena/client` is clear-signed with Blind signing off and is
+  no longer shown with the `meta` caution (see above).
+- A transaction whose signer entry has no capability list now needs Blind signing.
+- A partial `meta` (one to four of the first keys) in another order than the canonical one was
+  shown with the caution and signed by v1.3.1; it is now refused, as the canonical order already
+  was.
+- A `verifiers` field is refused even with Blind signing on: transactions that use Pact signature
+  verifiers cannot be signed with this app.
+- The integer rule for `gasLimit`, `ttl` and `creationTime` also applies to the structured transfer
+  (0x24 and legacy 0x10), whose fields are written into the same `meta`.
+- A host that sends another signing command, or a chunk of another signing command, between the
+  APDUs of a signing command now gets 0x6987. An address, public-key or version command in between
+  is answered as before, and the signing command continues with its own derivation path. Host
+  libraries that send a command's APDUs one after another are unaffected.
+- On Stax, Flex and Apex P, a transaction whose review would hold more than 253 pairs is refused
+  (see above).
+
+### Not in this release
+
+These stay with the v2.0.0 rewrite (its source is on `main`): the "Max fee" and "Paying account" review items, the
+"Recipient is not a principal account" warning, the expert-mode "Created", "TTL" and "Payload"
+items, showing each unverified capability as separate items, and the new screens.
+
+Known limit on Stax, Flex and Apex P: a transfer's or an unknown capability's title can show a wrong
+number (the only transfer titled "Transfer 2"); only the title is affected, never the values under it.
+
+### Testing
+
+- C++ unit tests: new review vectors for each rule (refusals with their exact message, and controls
+  that are still reviewed), and tests for a NUL byte inside and after the transaction. The vectors
+  for an unscoped signer and an unrecognised `meta` now run with Blind signing on, each with a copy
+  that is refused with it off. Every new refusal fails against the v1.3.1 code, except the unquoted
+  `decimal` key, which v1.3.1 already refused.
+- Zemu, all five device models: new functional tests for each rule, each refusal asserting the
+  status word and message, each rule with a case that still signs. Every new refusal test fails
+  against the released v1.3.1 binaries on every model. Tests whose input now needs Blind signing
+  run with it on; their snapshots gain the blind-signing screens. New snapshots show an escaped
+  account name, and the version page reads 1.3.2.
+- The literal output of `@kadena/client` 1.18.3 for a plain coin transfer is a unit vector and a
+  Zemu test on all five models: clear-signed with Blind signing off, signature verified.
+- On Stax, Flex and Apex P a review of exactly 253 pairs is walked to its last screen and signed,
+  and one of 254 pairs is refused over 0x22 and 0x03; unit vectors of 252, 253 and 254 pairs pin
+  the bound, and changing it by one makes them fail.
+
+### Device hashes (deterministic)
+
+| Target | Application hash |
+|---|---|
+| nanos2 (Nano S+) | `0f6f62ceb5f9b841fbd1b2253a9d14c221000d8da2aeb733c4d70ee30888ccc6` |
+| nanox | `61184da40282cc0843cad4b626e73a6c437531285932407c55e3824527d398c0` |
+| stax | `895bd8e3989ac5d4d4ef5cf50d395918499b70155816b21fbfc36c60e9f37441` |
+| flex | `e34526905e8bd26e50f915113876d1d5931c088a8894915586c1aa605c43d89a` |
+| apex_p | `aec869f487aa033d670fde696b254ab640cd68a8233e0cbd01ec5ef1fe1218b8` |
 
 ## [1.3.1] — 2026-10-01
 
