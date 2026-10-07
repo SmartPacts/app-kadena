@@ -15,8 +15,9 @@
  ******************************************************************************* */
 
 // v1.3.1 — a pending signing review locks the app. Which test catches which change:
-// - the dispatcher's call to review_lock_allows (apdu_handler.c) removed: THIS test (0x6986 expected);
-//   no unit test reaches the dispatcher;
+// - the dispatcher's call to review_lock_allows (apdu_handler.c) removed: THIS test (0x6986 expected)
+//   on an API level 26 build; from API level 27 the SDK refuses the commands first (0x6901), so only
+//   the API level 26 build of the same code can catch it; no unit test reaches the dispatcher;
 // - review_lock_allows ignoring the pending flag: tests/review_lock.cpp and this test;
 // - approval re-hashing the buffer instead of the bound digest (review_lock_digest):
 //   tests/review_lock.cpp (ApprovalSignsTheReviewedDigestNotTheBuffer); this test cannot tell, since
@@ -34,6 +35,30 @@ import { CONTROL_TRANSFER } from './testscases/security'
 import { TRANSACTIONS_TEST_CASES } from './testscases/transactions'
 import { blake2bFinal, blake2bInit, blake2bUpdate } from 'blakejs'
 import { listen } from '@ledgerhq/logs'
+import { readFileSync } from 'fs'
+
+// The API level a binary was built for, from its ledger.api_level ELF section (32-bit little-endian
+// ELF). From API level 27 the SDK itself answers 0x6901 to any command that arrives while a
+// previous one still awaits its reply, so during a pending review the app's own lock is not reached.
+function apiLevel(elfPath: string): number {
+  const elf = readFileSync(elfPath)
+  const shoff = elf.readUInt32LE(0x20)
+  const shentsize = elf.readUInt16LE(0x2e)
+  const shnum = elf.readUInt16LE(0x30)
+  const strtab = elf.readUInt32LE(shoff + elf.readUInt16LE(0x32) * shentsize + 16)
+  for (let i = 0; i < shnum; i++) {
+    const sh = shoff + i * shentsize
+    const nameOff = strtab + elf.readUInt32LE(sh)
+    const name = elf.subarray(nameOff, elf.indexOf(0, nameOff)).toString('latin1')
+    if (name === 'ledger.api_level') {
+      const off = elf.readUInt32LE(sh + 16)
+      const level = parseInt(elf.subarray(off, off + elf.readUInt32LE(sh + 20)).toString('latin1'), 10)
+      if (!Number.isInteger(level)) break
+      return level
+    }
+  }
+  throw new Error(`no ledger.api_level section in ${elfPath}`)
+}
 
 // @ts-expect-error
 import ed25519 from 'ed25519-supercop'
@@ -152,6 +177,7 @@ describe.each(S12_CASES)('S12 review lock', function (c) {
         return write(chunk, ...rest)
       }
       let duringReview: string[] = []
+      let approvedReply = ''
       try {
         restApdu(sim, last).catch(() => undefined)
         await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
@@ -169,15 +195,38 @@ describe.each(S12_CASES)('S12 review lock', function (c) {
         // The review is still on screen: approve it.
         await sim.navigateUntilText('.', `tmp-${m.prefix.toLowerCase()}-s12c`, sim.startOptions.approveKeyword, true, false)
         await Zemu.sleep(1000)
+        if (apiLevel(m.path) >= 27) {
+          // The approved signature follows the two refusals. The touch models send it at once; the
+          // Nano models hold it until the next APDU arrives, which receives it and is not processed,
+          // so GET_VERSION collects it before the next step starts.
+          const replies = () =>
+            logged
+              .slice(mark)
+              .join('')
+              .split('\n')
+              .map(l => /apdu: < ([0-9a-f]+)/.exec(l)?.[1])
+              .filter((r): r is string => !!r)
+          if (replies().length < 3) {
+            await rawExchange(t, Buffer.from([0x00, 0x20, 0x00, 0x00, 0x00]))
+          }
+          approvedReply = replies()[2] ?? ''
+        }
       } finally {
         ;(process.stdout as any).write = write
       }
       // While the review was pending: GET_VERSION answered (12 bytes + 9000), the signing command
-      // refused with a bare 0x6986, and nothing else.
+      // refused with a bare 0x6986, and nothing else. From API level 27 the SDK refuses both with a
+      // bare 0x6901 before the app sees them.
       expect(duringReview.length).toEqual(2)
-      expect(duringReview[0].slice(-4)).toEqual('9000')
-      expect(duringReview[0].length / 2).toEqual(14)
-      expect(duringReview[1]).toEqual('6986')
+      if (apiLevel(m.path) >= 27) {
+        expect(duringReview).toEqual(['6901', '6901'])
+        // Approval signed exactly what the undisturbed review signed.
+        expect(approvedReply).toEqual(reference.data + reference.sw)
+      } else {
+        expect(duringReview[0].slice(-4)).toEqual('9000')
+        expect(duringReview[0].length / 2).toEqual(14)
+        expect(duringReview[1]).toEqual('6986')
+      }
 
       // 3. Approval ended the review and released the lock: the same transaction, sent afresh, is
       //    accepted chunk by chunk and signs exactly as the undisturbed review did. (The approved

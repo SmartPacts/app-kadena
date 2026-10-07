@@ -133,7 +133,11 @@ transfer. No value is at risk in either case. v1.3.2 bounds the fraction digits 
   review on screen; after approval the lock is released and the same transaction signs byte for
   byte as an undisturbed review. The emulator leaves no request to receive the signature of the
   interleaved session itself, so that this approval signs the bound digest rests on the unit test
-  of `review_lock_digest` above.
+  of `review_lock_digest` above. From v1.3.4 (API level 27) the SDK answers both interleaved
+  commands with a bare 0x6901 before the app sees them, and the test then also receives the
+  approved signature of the interleaved session and checks that it equals the undisturbed one; the
+  0x6986 refusal (and so the dispatcher's call) is exercised by the API level 26 build of the same
+  code, which the CI suite runs.
 - **Deterministic builds:** all five targets build byte-identically across two clean runs.
 
 ### Deterministic device hashes (v1.3.1)
@@ -245,18 +249,18 @@ On Stax, Flex and Apex P a transfer's or an unknown capability's title can show 
 only transfer titled "Transfer 2"), because the number follows the order in which the screen
 library asks for pages; only the title is affected, never the values shown under it.
 
-### Deterministic device hashes (v1.3.3)
+### Deterministic device hashes (v1.3.4)
 
-v1.3.3 changes no behaviour: it fixes three static-analysis findings (see CHANGELOG.md) and the
-version page. Its hashes replace those of v1.3.2, which remain in CHANGELOG.md.
+v1.3.4 is the code of v1.3.3 built for Ledger OS API level 27 (SDK v27.1.1); it changes no
+behaviour. The hashes of v1.3.3 (API level 26, for OS 1.6.x devices) remain in CHANGELOG.md.
 
 | Target | Application hash |
 |---|---|
-| nanos2 | `5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4` |
-| nanox | `49ff0568570a03e6fbb944cb689ada76d1248f6c585dc0b00a396b2a97d2ec6f` |
-| stax | `53117d4b9e0fd38e3bfb0fd2cafbee56c7dac1b4611eb41ed42f94375379fadb` |
-| flex | `599f7494a233b33a21a1bd4eeb66861c7adbde508d62aef057d3fa5aa95900ec` |
-| apex_p | `c81f0c6b8d07248ce20860ab67edcbf8f1b3cf0a87f8263f1e7ae1812750ae4d` |
+| nanos2 | `03b75bacb5f651c27c27adcc4be525c4bc9f554797a39555ee7dbdc2f69d9d85` |
+| nanox | `5df77b865b44515a4e82c9c2bf3d7a5a94e2d72dcdb8ff8a69de94ba3fb3165b` |
+| stax | `8b972b021bce9ab56a37316a85981744aba412492c194a9f140b834d5e500073` |
+| flex | `60865900d494673d0ed9d8ef783e1796f3214a969e2f8453dd356668f02c6b2d` |
+| apex_p | `1214d54bba95467395c939840d4379225454920ff937e828371e96e397ed7cee` |
 
 ## Note on submission audit
 

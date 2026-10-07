@@ -27,6 +27,7 @@ The general structure of commands and responses is as follows:
 | Return code | Description             |
 | ----------- | ----------------------- |
 | 0x6400      | Execution Error         |
+| 0x6901      | Command not accepted    |
 | 0x6700      | Wrong buffer length     |
 | 0x6982      | Empty buffer            |
 | 0x6983      | Output buffer too small |
@@ -97,6 +98,10 @@ command (INS 0x24 and legacy INS 0x10):
   Approval signs the digest computed when the reviewed transaction was parsed (blake2b-256 of the
   JSON, or the 32 bytes of a hash to sign). If USB power is lost during a review, the lock stays set
   until the app is reopened, and signing commands are refused with `0x6986` until then.
+  From v1.3.4, built for API level 27, the SDK itself answers any command that arrives while a
+  previous one still awaits its reply with a bare `0x6901`, before the app sees it: during a
+  review, GET_VERSION and signing commands are answered `0x6901`. The `0x6986` answers above are
+  those of the API level 26 builds (v1.3.3 and earlier); the app's own lock is unchanged.
 - A `coin.TRANSFER` or `coin.TRANSFER_XCHAIN` amount in the reviewed entry must be either a bare
   JSON number or an object with the single key `"decimal"` whose value is a string; the number or
   string must be `digits` or `digits.digits`, with no leading zero in the integer part (`0.5` is

@@ -11,10 +11,10 @@ This is the maintained continuation of the Kadena Ledger app, originally develop
 upstream repository is no longer maintained, and its last release (v1.2.0) targets Ledger
 API_LEVEL 24, which current Nano S+ firmware (OS 1.6.x = API_LEVEL 26) refuses to install.
 
-This continuation (current release: v1.3.3):
+This continuation (current release: v1.3.4):
 
-- rebuilds the app against the current Ledger SDK (API_LEVEL 26) so it installs on today's
-  firmware, for all five supported devices;
+- rebuilds the app against the current Ledger SDK (API_LEVEL 27 from v1.3.4; API_LEVEL 26 up to
+  v1.3.3) so it installs on today's firmware, for all five supported devices;
 - includes memory-safety hardening in the transaction-display renderers and the JSON parser;
 - v1.3.1 is a security patch: the device now enforces that it reviews the signer entry of its own
   key, treats an empty capability list as unscoped, matches the signer key exactly, validates every
@@ -29,6 +29,8 @@ This continuation (current release: v1.3.3):
   refusal of `verifiers` and of non-integer gas fields. The `meta` keys are accepted in any order,
   so a plain coin transfer built with `@kadena/client` is clear-signed;
 - v1.3.3 fixes three static-analysis findings, with no functional change;
+- v1.3.4 is v1.3.3 built for Ledger OS API level 27 (Nano S+ 1.7.0, Nano X 2.8.0, Stax 1.11.0,
+  Flex 1.7.0, Apex P 1.2.0), with no functional change;
 - keeps the full Zemu test matrix green across all five device targets;
 - is maintained by [Smart Pacts](https://smartpacts.io), with the goal of returning the app to
   official availability through the Ledger app store.
@@ -64,13 +66,14 @@ chmod +x ./installer_nanos_plus.sh
 ./installer_nanos_plus.sh load
 ```
 
-This requires Python 3 with `ledgerblue` installed. Verify the application hash your device
-displays during installation against the value in the release notes. For v1.3.3 on the Nano S+
-(target `nanos2`) the expected hash is:
+This requires Python 3 with `ledgerblue` installed. Pick the release that matches the device's
+OS version: Nano S+ OS 1.7.0 refuses apps built for API level 26 (v1.3.3 and earlier), and v1.3.4
+is built for API level 27. Verify the application hash your device displays during installation:
 
-```
-5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4
-```
+| Nano S+ OS | API level | Release | Expected application hash (target `nanos2`) |
+|---|---|---|---|
+| 1.7.x | 27 | v1.3.4 | `03b75bacb5f651c27c27adcc4be525c4bc9f554797a39555ee7dbdc2f69d9d85` |
+| 1.6.x | 26 | v1.3.3 | `5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4` |
 
 ## Troubleshooting / Support
 If you encounter any issues while using the app, please open an issue in this repository and the
@@ -109,6 +112,10 @@ If you see conan is not found, check that you installed the package in the same 
 ## How to build ?
 
 Builds use Ledger's official builder image, the same image the CI build job and the releases use.
+Releases from v1.3.4 on (API level 27, for Nano S+ OS 1.7.x and the matching OS on the other
+devices) are built with `ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:8a2f13fa687795c6e7548197c94e2e31b15b28523a6e190a129fdd15eaa03660`
+(SDK v27.1.1). For OS 1.6.x devices, v1.3.3 and earlier were built with
+`ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:036d9fd1a264a068ea20f2d0edc962ecdbf1bf5861ef75215924abd77f93bf29` (SDK v26.5.0, API level 26).
 Inside the container, build one target at a time by pointing `BOLOS_SDK` at the SDK the image
 ships for that device:
 
@@ -152,8 +159,9 @@ tooling point at an older builder image and are not used for releases or CI.
 
     CI runs these steps on every push as the
     `Functional tests (Zemu, five device models)` job in `.github/workflows/reusable_build.yml`,
-    against binaries it builds with the same pinned builder image as the releases. Ledger's
-    reusable build job in that workflow follows the latest SDK separately. Failing
+    against binaries it builds with the API-level-26 builder image, because the emulator image
+    the Zemu package pins supports API levels up to 26. Ledger's reusable build job in that
+    workflow follows the latest SDK separately. Failing
     snapshots are uploaded as the `snapshots-tmp` artifact.
 
     To run a single file: `yarn jest tests/standard.test.ts`.

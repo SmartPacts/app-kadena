@@ -32,9 +32,10 @@ jobs:
           - suite: review_lock
             concurrency: 1
     env:
-      # The releases are built with this image (API level 26). Ledger's reusable
-      # build above follows the latest SDK, which the emulator image used by the
-      # Zemu suite may not support yet, so the suite tests the binaries we ship.
+      # API level 26 builder image (the releases for OS 1.6.x devices, up to v1.3.3).
+      # Releases from v1.3.4 are built for API level 27 by Ledger's current image, as
+      # in the reusable build above; the emulator image the Zemu package pins supports
+      # API levels up to 26, so the suite tests this build of the same code.
       BUILDER_IMAGE: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:036d9fd1a264a068ea20f2d0edc962ecdbf1bf5861ef75215924abd77f93bf29
     steps:
       - name: Checkout
