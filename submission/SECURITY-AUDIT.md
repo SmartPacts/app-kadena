@@ -1,6 +1,6 @@
-# Kadena Ledger app — security review (v2.0.0, Rust, API_LEVEL 26)
+# Kadena Ledger app — security review (v2.0.0, Rust, API_LEVEL 26 and 27)
 
-v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.38.0), NBGL on all five
+v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.41.0), NBGL on all five
 devices (Nano S+, Nano X, Stax, Flex, Apex P). This document describes v2.0.0 only; the C app (v1.3.x) is on the
 `c-v1.3` branch.
 
@@ -171,6 +171,63 @@ the release binaries listed below):
 The differential (below) was not run again for these two changes: its corpus now holds three V27 cases and
 `compare.py` names V27, but the run in the report is of the previous build.
 
+### SDK 1.41.0
+
+`ledger_device_sdk` 1.38.0 to 1.41.0 and `ledger_secure_sdk_sys` 1.16.4 to 1.17.0 (the enforcer requires
+the current crate). The crates' changes, read against what this app uses:
+
+- Key derivation and signing: `Ed25519::derive_from_path` and the one-shot `sign` are unchanged.
+  `bip32_derive` now refuses a chain-code buffer shorter than 32 bytes; the SDK's Ed25519 derivation always
+  passes a 32-byte one, so the check cannot fire for this app. The streaming Ed25519 signer, which the app
+  does not use, checks its key and randomizes its nonce multiplication.
+- NBGL review flows: every flow the app uses (streaming review, address review, choice, status, home and
+  settings) now lends the `Comm` to the NBGL callbacks for as long as it is displayed, and the callbacks
+  refuse to run without that loan; the app already passed the `Comm` to each. Reviews of more than 255
+  fields are refused without being displayed. The app's streaming review sends a step at a time
+  (`batch` in `ui.rs`): it adds items while it holds fewer than 16 fields (`BATCH_ITEMS`), and an item adds
+  all its fields at once, one per page on Nano, so a step holds at most 15 fields plus the pages of one
+  item. The longest item, a 299-byte value shown entirely as `\xNN`, takes 21 pages on Nano S+ and Nano X
+  (measured), so a step holds at most 36 fields; on Stax, Flex and Apex P an item is one field. The
+  settings switch descriptors moved from a static array to the heap.
+- I/O: only one `Comm` can ever be created and it is never dropped (the app creates one, at start). A screen
+  borrows the `Comm`, whose buffer holds the data of the command in flight, for as long as it is shown, and
+  events received meanwhile overwrite that buffer: the data cannot be read while a screen is shown. The app
+  takes what it needs from a command (`app.handle` in `main.rs`) before it shows a screen.
+- Settings storage (`AtomicStorage`): an update of a storage that was never updated now stores the value
+  instead of stopping the app, and `get_or_init` stores an initial value into such a storage. A read of it
+  still stops the app. An installed image carries the initial settings with their validity flags (the
+  linker script keeps `.nvm_data` in the image), so a fresh install reads both switches OFF, as before. A
+  store that is all zero, flags included, is now handled too: at start the app stores the switches OFF
+  if the storage holds no value (`settings::init`). `tests/test_zeroed_nvm.py` starts the app with its
+  store zeroed and runs the first-use tests again (both switches OFF on screen and in behaviour, each
+  switch turned on, JSON, hash, structured-transfer signing and address review from the empty buffers):
+  12 tests per device pass on all five devices at both API levels, and all 60 fail without
+  `settings::init`, the app stopping at its first read of a switch. `tests/test_saved_settings.py` checks
+  that the start keeps a saved setting: with "Blind signing" saved ON in the second half (the first
+  invalid), and in both halves valid with the first holding ON, the switch reads ON and a hash is signed
+  without touching the settings; an app that stored the default unconditionally at start fails both (run on
+  Nano S+ with such a change).
+- A command sent while a review is on screen (`tests/test_review_interrupt.py`): the SDK answers it with a
+  bare 0x6901 before the app sees it, GET_VERSION included, and the review stays on screen; approving it
+  signs exactly what an undisturbed review of the same transaction signs. In the emulator a reply goes to
+  every request waiting at that moment, so the signing request itself receives the 0x6901, and the approved
+  signature has no request left to receive it; the test reads the replies as the device sent them from the
+  emulator's raw APDU port (the two refusals, then the signature, equal to the undisturbed one). Unlike
+  the C app at API level 27 on Nano, the reply is not held for a later command: once the review has ended,
+  the next command is answered normally.
+- Heap and build: the heap is unchanged (8 KiB); the new application-storage section is empty without
+  the `app_storage` feature, which the app does not enable. Code and read-only data grow by 3.5 to 4 KiB per
+  device (`.text` by 3.5 KiB on Nano S+, Nano X and Flex and 4 KiB on Stax and Apex P, `.rodata` by 512 bytes
+  on Nano S+ only); static RAM does not grow (the settings switch descriptors moved to the heap). The heap
+  peaks were measured again on this build (see Heap below).
+
+Gates on this build: host tests (157), `cargo fmt`, `cargo clippy -D warnings` on all five devices and the
+core, ruff and mypy on the tests, and the Ragger suite on all five devices at both API levels (224 tests
+per device, no screen changed from its snapshot). The tests added after it (saved settings, a command
+during a review, the heap measurement) were run with the release binaries unchanged, on Nano S+ and Apex P
+at API level 26 and on Nano S+ at API level 27, with the whole suite; the heap measurement on all five
+devices at both levels.
+
 ### Review of the C v1.3.1 patch, carried into v2.0.0
 
 | # | Severity | Issue (inherited from v1.3.0) | Fix | Evidence |
@@ -203,27 +260,32 @@ command) are listed in `docs/APDUSPEC.md`.
   review code (F5, F7, F8, R2-3), each made its named tests fail (F8's on the touch devices; on Nano X the
   largest printable review fits the heap even without the byte cap, the item cap bounds it; R2-3's on Flex,
   the reviewer's case).
-- **Heap** (*emulator*, measurement build `--features heap-probe`, not shipped): the largest review the app
-  accepts (values at their display bounds, as many as the token cap or the 15104-byte buffer allows), fully
-  approved, with printable values and with every From/To byte non-printable (shown as `\xNN`); peak = heap
-  size minus the largest block still allocatable. Nano S+ and Flex were measured again at `38f56c4` and `71cf734` (same figures), after the
-  Nano line cutting (H-1, which briefly keeps a second copy of a value without spaces): Nano S+ grew by 40 bytes
-  with non-printable values, Flex did not change. Nano X, Stax and Apex P were last measured at `df65483`; Nano
-  X runs the same screen code as Nano S+ and had the same figures before, so its non-printable peak is expected
-  to grow the same way (not measured); Stax and Apex P run the touch code Flex runs:
+- **Heap** (*emulator*, measurement app built by `tools/heap-probe.sh`, not shipped): the app's global
+  allocator there is the SDK's own (embedded-alloc 0.5.1 over the same 8192-byte heap) wrapped to record the
+  most bytes in use at any moment, as the allocator counts them (block headers and alignment included), and
+  every allocation that fails; `tests/test_heap_probe.py` reads both. Workload: the largest review the app
+  accepts (`largest` in `tests/test_review_scope.py`: values at their display bounds, as many transfers as
+  the token cap or the 15104-byte buffer allows), fully approved, with printable From/To and with every
+  From/To byte non-printable (shown as `\xNN`). Measured on this build (SDK 1.41.0), on all five devices at
+  both API levels, with the same figures at 26 and 27 and no allocation failing:
 
-  | device | heap (bytes) | peak in use, printable (bytes) | peak in use, non-printable (bytes) |
-  |---|---|---|---|
-  | Nano S+ (`71cf734`) | 8192 | 3400 | 5884 |
-  | Nano X (`df65483`) | 8192 | 3400 | 5844 |
-  | Stax (`df65483`) | 8192 | 2796 | 4156 |
-  | Flex (`71cf734`) | 8192 | 2796 | 4156 |
-  | Apex P (`df65483`) | 8192 | 2796 | 4156 |
+  | device | heap (bytes) | peak, printable (bytes) | peak, non-printable (bytes) | headroom, non-printable (bytes) |
+  |---|---|---|---|---|
+  | Nano S+ | 8192 | 4364 | 7000 | 1192 |
+  | Nano X | 8192 | 4364 | 7000 | 1192 |
+  | Stax | 8192 | 3224 | 3420 | 4772 |
+  | Flex | 8192 | 3224 | 3420 | 4772 |
+  | Apex P | 8192 | 3224 | 3420 | 4772 |
+
+  The Nano peak with non-printable values is the tightest case: 1192 bytes stay free. The earlier figures
+  (5884 on Nano S+) were taken on SDK 1.38 by sampling the largest allocatable block at chosen points and
+  did not include every allocation the SDK makes during a step; these replace them. The peak includes what
+  stays allocated for the whole session (the home screen's settings and information lists).
 
 - **Differential** (*differential*): 486 cases, 1603 APDUs per device, all five devices; every difference
   from v1.3.0 is one of V1-V26 or the version bytes (`tools/differential/report.md`). Run with the previous
   release ELFs (`71cf734`), after the first hardware run's display changes (H-1, H-2) and R7-1; not run again
-  for V27 and SDK 1.38.0 (see above).
+  for V27 and SDKs 1.38.0 and 1.41.0 (see above).
 - **Refusal tests check the whole reply** (*emulator*): every Ragger test of a refusal compares the status
   word and the response data together, so a refusal that has a message is checked word for word, and a bare
   one (legacy commands) is checked to carry none.
@@ -241,18 +303,35 @@ command) are listed in `docs/APDUSPEC.md`.
 - **Build** : `cargo fmt --check`, `cargo clippy -D warnings` on all five targets and the core, Ledger's
   guidelines enforcer, and a rebuild from a fresh clone giving byte-identical ELFs.
 
-### Release binaries (v2.0.0, `cargo ledger build`, pinned `ledger-app-dev-tools` image)
+### Release binaries (v2.0.0, `cargo ledger build`, pinned `ledger-app-dev-tools` images)
 
-Built twice from fresh trees at `/app`, byte-identical; they include V27, SDK 1.38.0 and the new app icon. The
-hardware runs above were on the previous build.
+Built twice from fresh trees at `/app` for each API level, byte-identical, and once more from a tree at
+`/work/some/other/dir` (all five devices, both API levels), giving the same ELFs; they include V27, SDK
+1.41.0 and the new app icon. **Hardware runs of these binaries are pending**: the hardware runs above were on an earlier build.
 
-| device | ELF sha256 |
-|---|---|
-| Nano S+ | `21e7cc0c3ac3722f97cbd408ebec836f7da389a90743901e3454cd04299e1d95` |
-| Nano X | `467dd596625088d4c689d4cd18bc48eef8556944fc5ddee7e14e0695bb24a854` |
-| Stax | `37fd7ec2be11cf484e6a38b49a88817dd37afb5c882145e6057991e497976c36` |
-| Flex | `f4c5da99efb26e982670da77b7f365407c36a3098105a4a0614ef5556d50e320` |
-| Apex P | `402a3408f3ae6d91737125a14782f4223e46feeeb81a1e233e2d9571b180c3d9` |
+API level 26 (OS 1.6.x devices), image
+`ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:1f93ba59ee02576f336653c712276f006d4d81f4e355b023489bb7b5bdcf390d`
+(C SDK v26.6.5):
+
+| device | ELF sha256 | application hash |
+|---|---|---|
+| Nano S+ | `a971a82569190c02d89057127920660bbe0d0d4924420c593144c1b2bd0593dd` | `432cd40c39545df051cbbbe0dca91c73b3ebf930ffc461ead6d629d42556efc9` |
+| Nano X | `7f466dcf2ffd2320c3db337092599603d923d60d6ecfdc7e0b449b0c41e56230` | `1d9781b6a4d9d1d3deb830f9556d5bd141c71a80837cfc89884dc1e81915e570` |
+| Stax | `9f0e0717d6119005d10acb61d270906918d2cdeb4ba149fd1691d33a6cc3a800` | `e4a9ad65e4d2cd0ff2699e7bbb3efd53729b1ddb4b07c8af818a2eeceb42cefe` |
+| Flex | `c8f3eda04e0e87f3c75f66ff9410e785e139842adbe6e0516379ed9268412db1` | `985c1b8bd088eb5a5a715ebd4eb3090cb1cf7a9e719593c8bec6a9261e9b3cd1` |
+| Apex P | `b607a37a6c94e738a502805f6d205ff8c1b275a500d7c8bced362bdeabef885c` | `74885dfed113e27b848488a86cc5ae02c8be5c75881c41752df20da9bf092b15` |
+
+API level 27 (Nano S+ OS 1.7.0, Nano X 2.8.0, Stax 1.11.0, Flex 1.7.0, Apex P 1.2.0), image
+`ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:0ed357a6f66a1df949649803ea79e5a224f3f551a496adb3b73af22088781452`
+(C SDK v27.1.1):
+
+| device | ELF sha256 | application hash |
+|---|---|---|
+| Nano S+ | `90d561aa16a6ebee376cee12ee5406c6e42862bb00d91233c028ba599d595f48` | `7bfdbb44863c0b7d4876bc22499fdca715d3e854d11758a563fb38add90291ef` |
+| Nano X | `64b8511ae4780ede3b68e352b7d3f0ae9dc1f6fc1db6190bc919631601bb8b52` | `74de6747901bbfb5bc58db8de63826ccc96c3a3a4326ad693052e4b990db961b` |
+| Stax | `757d64d36a415fb2d358035fdf4fa24062df7d1c716002184733f3bdd6f1e2ce` | `cbdac81a4bdae88aa20fe3ccc97ca5e8e6b0bea86de7fb2118dd3b858f91b7b1` |
+| Flex | `09162375acee3ecd66fd5481d4b72197b39757b6ad58d1ab0e26340617ccf8f4` | `d99262d25415e517ec794c87e351ee66670915b8cd2267935f1c8fb0a0852199` |
+| Apex P | `cb6f9215dd6b337efafddcb765cfc8a953c9bbee10dbf3c271484b25c049274f` | `32bf7feaeecfd1cbd4c9925e600d6a63231d895b0932d9c35671981ffb98fda5` |
 
 ## Known limits
 

@@ -3,12 +3,16 @@ do it), the transfer template as a host builds it, signature checks and screen
 navigation for the NBGL flows on every device."""
 
 import hashlib
+import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from ragger.backend import RaisePolicy
+from elftools.elf.elffile import ELFFile
+from elftools.elf.sections import SymbolTableSection
+from ragger.backend import RaisePolicy, SpeculosBackend
 from ragger.navigator import NavInsID
 
 H = 0x80000000
@@ -446,3 +450,62 @@ class Device:
 
 def snapshots_root():
     return Path(__file__).parent.resolve()
+
+
+# -- the app's store in the ELF (flash data loaded as it is by Speculos) -------
+STORE_SYMBOL = "6kadena7storage5STORE"  # kadena::storage::STORE, mangled
+# The settings, first in the store: an AtomicStorage of two halves, A then B, each
+# a validity flag (0xA5 = valid) and the value, every part on its own 64 bytes.
+SETTINGS_A_FLAG, SETTINGS_A_VALUE, SETTINGS_B_FLAG, SETTINGS_B_VALUE = 0x00, 0x40, 0x80, 0xC0
+SETTINGS_VALID = 0xA5
+
+
+def patch_store(elf_path, patch):
+    """Rewrites the app's store in the ELF's `.nvm_data`: `patch` gets the store's
+    bytes (a bytearray) and changes them in place. Returns the store's size."""
+    with open(elf_path, "rb") as f:
+        elf = ELFFile(f)
+        nvm = elf.get_section_by_name(".nvm_data")
+        symtab = elf.get_section_by_name(".symtab")
+        assert nvm is not None and isinstance(symtab, SymbolTableSection)
+        store = [s for s in symtab.iter_symbols() if STORE_SYMBOL in s.name]
+        assert len(store) == 1, f"expected one store symbol, found {len(store)}"
+        addr, size = store[0]["st_value"], store[0]["st_size"]
+        assert nvm["sh_addr"] <= addr and addr + size <= nvm["sh_addr"] + nvm["sh_size"]
+        offset = nvm["sh_offset"] + addr - nvm["sh_addr"]
+    with open(elf_path, "r+b") as f:
+        f.seek(offset)
+        data = bytearray(f.read(size))
+        # The image's settings: both halves valid, both switches OFF.
+        assert data[SETTINGS_A_FLAG] == SETTINGS_VALID and data[SETTINGS_B_FLAG] == SETTINGS_VALID
+        before = bytes(data)
+        patch(data)
+        assert bytes(data) != before, "the patch changed nothing"
+        f.seek(offset)
+        f.write(data)
+    return size
+
+
+def patched_app_backend(request, tmp_path, patch):
+    """A Speculos backend on a copy of the app whose store `patch` rewrote (see
+    patch_store); takes the same fixtures as Ragger's own backend."""
+    # Imported here: at module level it would come before pytest registers it as a plugin.
+    from ragger.conftest import base_conftest
+
+    if request.getfixturevalue("backend_name").lower() != "speculos":
+        pytest.skip("needs the emulator, which loads the modified binary")
+    device = request.getfixturevalue("device")
+    app, args = base_conftest.prepare_speculos_args(
+        request.getfixturevalue("root_pytest_dir"),
+        device,
+        request.getfixturevalue("display"),
+        request.getfixturevalue("pki_prod"),
+        request.getfixturevalue("cli_user_seed"),
+        request.getfixturevalue("additional_speculos_arguments"),
+        request.getfixturevalue("verbose_speculos"),
+        request.getfixturevalue("ignore_missing_binaries"),
+    )
+    patched = tmp_path / "app-patched-store.elf"
+    shutil.copyfile(app, patched)
+    assert patch_store(patched, patch) > 0
+    return SpeculosBackend(patched, device=device, **args)

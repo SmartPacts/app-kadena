@@ -80,6 +80,9 @@ fn send(comm: &mut Comm, r: &Reply) {
 
 #[no_mangle]
 extern "C" fn sample_main(_arg0: u32) {
+    #[cfg(feature = "heap-probe")]
+    ui::probe::init();
+    settings::init();
     let comm = init_comm(&COMM);
     // SAFETY: sample_main runs once and this is the only reference ever taken.
     let app: &mut App<MAX_TOKENS> = unsafe { &mut *APP.0.get() };
@@ -95,10 +98,11 @@ extern "C" fn sample_main(_arg0: u32) {
         };
         #[cfg(feature = "heap-probe")]
         if h.cla == 0 && h.ins == 0xFE {
-            let (size, used) = ui::probe::take();
-            let mut body = [0u8; 8];
+            let (size, used, failed) = ui::probe::take();
+            let mut body = [0u8; 12];
             body[..4].copy_from_slice(&(size as u32).to_be_bytes());
-            body[4..].copy_from_slice(&(used as u32).to_be_bytes());
+            body[4..8].copy_from_slice(&(used as u32).to_be_bytes());
+            body[8..].copy_from_slice(&(failed as u32).to_be_bytes());
             send(command.into_comm(), &Reply::with(&[&body], 0x9000));
             continue;
         }

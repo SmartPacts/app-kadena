@@ -4,7 +4,7 @@ All notable changes to the Kadena Ledger app (this maintained continuation) are 
 
 ## [2.0.0] — unreleased
 
-The app is rewritten in Rust on Ledger's Rust SDK (`ledger_device_sdk` 1.38.0), with the NBGL
+The app is rewritten in Rust on Ledger's Rust SDK (`ledger_device_sdk` 1.41.0), with the NBGL
 interface on every device. The C implementation (v1.3.x) is on the `c-v1.3` branch and in the earlier history of this one.
 
 The app icon is now the Kadena Community Edition mark.
@@ -14,6 +14,15 @@ The app icon is now the Kadena Community Edition mark.
 - Builds no longer embed the build directory (Cargo `trim-paths`), so the same source gives the same
   binary from any directory. The device hashes change with this; the release build's hashes will be
   listed at release.
+- `ledger_device_sdk` 1.41.0 (`ledger_secure_sdk_sys` 1.17.0), the version Ledger's guidelines
+  enforcer requires. Builds for API level 26 (OS 1.6.x devices) and API level 27 (Nano S+ OS 1.7.0
+  and the matching OS on the other devices) come from the same source.
+
+### Settings
+
+- Both switches are OFF on a fresh install, as before. If the app ever starts on a store that is all
+  zero, with no initial settings in it, it now stores the switches OFF and carries on; before, its first
+  read of a switch stopped the app.
 
 ### Compatibility
 
@@ -146,6 +155,47 @@ The app icon is now the Kadena Community Edition mark.
   review within the 8 KiB heap with printable and with non-printable values.
 - Flash buffers are written through their own cell pointers, and every access to the flash store, the
   settings included, goes through one raw pointer: the app no longer creates overlapping references to it.
+
+## [1.3.4] — 2026-10-06
+
+Built for Ledger OS API level 27 (Nano S+ 1.7.0, Nano X 2.8.0, Stax 1.11.0, Flex 1.7.0, Apex P
+1.2.0); no functional change; devices on the previous OS keep using v1.3.3.
+
+### Changed
+
+- Built with Ledger's builder image
+  `ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:8a2f13fa687795c6e7548197c94e2e31b15b28523a6e190a129fdd15eaa03660`,
+  which ships ledger-secure-sdk v27.1.1 (API level 27) for all five devices. v1.3.3 and earlier
+  were built with `ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:036d9fd1a264a068ea20f2d0edc962ecdbf1bf5861ef75215924abd77f93bf29`
+  (SDK v26.5.0, API level 26), which remains the image for OS 1.6.x devices.
+- The app code is that of v1.3.3; only the version number changes, and the version page reads
+  1.3.4. The install parameters are those of v1.3.3 except the API level.
+- One wire-visible difference comes from the SDK: from API level 27 it answers any command that
+  arrives while a previous one still awaits its reply with a bare `0x6901`, before the app sees
+  it. While a signing review waits, GET_VERSION and signing commands therefore get `0x6901` where
+  v1.3.3 answered GET_VERSION and refused the rest with `0x6986`. Nothing more is accepted.
+
+### Testing
+
+- v1.3.3's code built with the new image reproduces, byte for byte on all five devices, the
+  API-level-27 binaries that the public CI built from the v1.3.3 release commit.
+- The unit suite and the full Zemu matrix pass on the API-level-27 binaries, all five models.
+  Only the version-page snapshots change (1.3.4). The review-lock test expects `0x6901` for both
+  interleaved commands on an API level 27 binary, and now also checks that the approved signature
+  of the interrupted review equals the undisturbed one. The emulator image the Zemu package pins
+  supports API levels up to 26 and cannot start these binaries, so this run used Speculos v0.27.1,
+  which supports API level 27 (Ledger's image `ghcr.io/ledgerhq/speculos@sha256:028d1e368244631578537e7ca50b6f13ca2932b5f3fd220627289b559c07a886`).
+- Not yet run on a device.
+
+### Device hashes (deterministic)
+
+| Target | Application hash |
+|---|---|
+| nanos2 (Nano S+) | `03b75bacb5f651c27c27adcc4be525c4bc9f554797a39555ee7dbdc2f69d9d85` |
+| nanox | `5df77b865b44515a4e82c9c2bf3d7a5a94e2d72dcdb8ff8a69de94ba3fb3165b` |
+| stax | `8b972b021bce9ab56a37316a85981744aba412492c194a9f140b834d5e500073` |
+| flex | `60865900d494673d0ed9d8ef783e1796f3214a969e2f8453dd356668f02c6b2d` |
+| apex_p | `1214d54bba95467395c939840d4379225454920ff937e828371e96e397ed7cee` |
 
 ## [1.3.3] — 2026-10-06
 

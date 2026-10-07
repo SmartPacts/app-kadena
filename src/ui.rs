@@ -130,8 +130,6 @@ fn batch<const T: usize, P: Platform>(
             .iter()
             .map(|(t, v)| t.len() + v.len() + FIELD_OVERHEAD)
             .sum();
-        #[cfg(feature = "heap-probe")]
-        probe::sample();
         if !out.is_empty() && bytes + cost > BATCH_BYTES {
             break;
         }
@@ -369,8 +367,6 @@ mod nano {
             while take < rest.len() && take > 1 && rest.as_bytes()[take - 1] == b' ' {
                 take -= 1;
             }
-            #[cfg(feature = "heap-probe")]
-            super::probe::sample();
             out.push(String::from(&rest[..take]));
             rest = &rest[take..];
             if take < len {
@@ -413,8 +409,6 @@ pub fn review_tx<const T: usize, P: Platform>(
                 value: v.as_str(),
             })
             .collect();
-        #[cfg(feature = "heap-probe")]
-        probe::sample_sdk_copy(&fields);
         // `continue_review`, not `next`: `next` lets the user skip the rest of
         // the review (on Nano a "press both to skip" page follows the items),
         // which the C app never offered. The SDK marks it deprecated only in
@@ -434,67 +428,78 @@ pub fn review_tx<const T: usize, P: Platform>(
     )
 }
 
-/// Heap measurement build only (`--features heap-probe`, never shipped): records
-/// the largest heap use seen during reviews, measured as the heap size minus the
-/// largest block that can still be allocated, and answers it on INS 0xFE.
+/// Heap measurement build only (`--features heap-probe`, never shipped). The
+/// global allocator is the SDK's own (embedded-alloc 0.5.1 over a heap of the
+/// SDK's size), wrapped to record the most bytes in use at any moment, as the
+/// allocator counts them, and any allocation that failed. INS 0xFE answers both
+/// and starts a new measurement from the bytes in use then.
 #[cfg(feature = "heap-probe")]
 pub mod probe {
-    use alloc::alloc::{alloc, dealloc, Layout};
-    use alloc::ffi::CString;
-    use alloc::vec::Vec;
+    use core::alloc::{GlobalAlloc, Layout};
     use core::cell::Cell;
-    use ledger_device_sdk::nbgl::Field;
+    use core::mem::MaybeUninit;
+    use embedded_alloc::Heap;
     use ledger_device_sdk::sys;
 
-    struct Max(Cell<usize>);
+    struct Hwm {
+        heap: Heap,
+        peak: Cell<usize>,
+        failed: Cell<usize>,
+    }
     // SAFETY: the device runs one thread.
-    unsafe impl Sync for Max {}
-    // Zero-initialised: the app may not have a `.data` section.
-    static MAX_USED: Max = Max(Cell::new(0));
+    unsafe impl Sync for Hwm {}
 
-    /// Largest block the allocator can hand out now (binary search).
-    pub fn sample() {
-        let (mut lo, mut hi) = (0usize, sys::HEAP_SIZE);
-        while lo < hi {
-            let mid = (lo + hi).div_ceil(2);
-            let l = Layout::from_size_align(mid, 4).unwrap();
-            // SAFETY: non-zero size; freed at once with the same layout. The
-            // black box keeps the compiler from eliding the pair.
-            let ptr = core::hint::black_box(unsafe { alloc(l) });
-            if ptr.is_null() {
-                hi = mid - 1;
+    // All zero: the app may not have a `.data` section.
+    #[global_allocator]
+    static HEAP: Hwm = Hwm {
+        heap: Heap::empty(),
+        peak: Cell::new(0),
+        failed: Cell::new(0),
+    };
+
+    // SAFETY: allocations go through the wrapped heap, unchanged; only the
+    // counters are added.
+    unsafe impl GlobalAlloc for Hwm {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let p = unsafe { self.heap.alloc(layout) };
+            if p.is_null() {
+                self.failed.set(self.failed.get() + 1);
             } else {
-                unsafe { dealloc(ptr, l) };
-                lo = mid;
+                self.peak.set(self.peak.get().max(self.heap.used()));
             }
+            p
         }
-        MAX_USED.0.set(MAX_USED.0.get().max(sys::HEAP_SIZE - lo));
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { self.heap.dealloc(ptr, layout) }
+        }
     }
 
-    /// The copies `continue_review` makes of a batch before it blocks on the
-    /// screen (SDK nbgl_streaming_review.rs:209-246), then a sample.
-    pub fn sample_sdk_copy(fields: &[Field]) {
-        let copies: Vec<(CString, CString)> = fields
-            .iter()
-            .map(|f| {
-                (
-                    CString::new(f.name).unwrap_or_default(),
-                    CString::new(f.value).unwrap_or_default(),
-                )
-            })
-            .collect();
-        let mut pairs: Vec<sys::nbgl_contentTagValue_t> = Vec::new();
-        for _ in copies.iter() {
-            pairs.push(sys::nbgl_contentTagValue_t::default());
-        }
-        sample();
-        drop(pairs);
-        drop(copies);
+    // As the SDK's own: the device has no concurrency.
+    struct CriticalSection;
+    critical_section::set_impl!(CriticalSection);
+    // SAFETY: one thread, no interrupt handler touches the heap.
+    unsafe impl critical_section::Impl for CriticalSection {
+        unsafe fn acquire() -> critical_section::RawRestoreState {}
+        unsafe fn release(_restore_state: critical_section::RawRestoreState) {}
     }
 
-    /// (heap size, largest use since the last call).
-    pub fn take() -> (usize, usize) {
-        (sys::HEAP_SIZE, MAX_USED.0.replace(0))
+    /// Gives the allocator its memory, as the SDK's `heap_init` does when the SDK
+    /// owns the allocator. Called first in `sample_main`, before any allocation.
+    pub fn init() {
+        static mut MEM: [MaybeUninit<u8>; sys::HEAP_SIZE] = [MaybeUninit::uninit(); sys::HEAP_SIZE];
+        // SAFETY: called once, before any allocation; MEM is used by nothing else.
+        unsafe { HEAP.heap.init(&raw mut MEM as usize, sys::HEAP_SIZE) }
+    }
+
+    /// (heap size, most bytes in use since the last call, failed allocations
+    /// since the last call).
+    pub fn take() -> (usize, usize, usize) {
+        (
+            sys::HEAP_SIZE,
+            HEAP.peak.replace(HEAP.heap.used()),
+            HEAP.failed.replace(0),
+        )
     }
 }
 
