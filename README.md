@@ -4,10 +4,11 @@
 The Kadena app for Ledger Nano S+, Nano X, Flex, Stax, and Apex P (Nano Gen5), written in Rust on
 Ledger's Rust SDK.
 
-> **Release candidate, published for review.** Version 2.0.0 is not released: there are no binaries to
-> install and it has not had the third-party audit Ledger requires. The app to install today is the C
-> implementation, v1.3.3: see the [release page](https://github.com/SmartPacts/app-kadena/releases); its
-> source is on the [`c-v1.3`](https://github.com/SmartPacts/app-kadena/tree/c-v1.3) branch.
+> **Version 2.0.0 is released for sideloading** (Nano S Plus and Nano Gen5 files for Ledger OS API levels 26
+> and 27 on the [release page](https://github.com/SmartPacts/app-kadena/releases)). It is not in Ledger's
+> catalog and has not had the third-party audit Ledger requires for listing; it is the maintainers' own,
+> reviewed and hardware-tested build. The C implementation (v1.3.x) stays available on the same release page
+> and on the [`c-v1.3`](https://github.com/SmartPacts/app-kadena/tree/c-v1.3) branch.
 
 ## About this repository
 

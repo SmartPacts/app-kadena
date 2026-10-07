@@ -307,7 +307,7 @@ command) are listed in `docs/APDUSPEC.md`.
 
 Built twice from fresh trees at `/app` for each API level, byte-identical, and once more from a tree at
 `/work/some/other/dir` (all five devices, both API levels), giving the same ELFs; they include V27, SDK
-1.41.0 and the new app icon. **Hardware runs of these binaries are pending**: the hardware runs above were on an earlier build.
+1.41.0 and the new app icon. These binaries were run on hardware on 2026-10-07: the Nano S+ (OS 1.7.0) with the API-27 build and the Nano Gen5 (OS 1.1.1) with the API-26 build, each through the install hash on the device, version, key and address, a clear-signed coin transfer built by @kadena/client with Blind signing OFF (both switches read OFF after the install), and a token transfer refused with it OFF and signed with it ON; every signature verified on the host. Nano X, Stax and Flex: emulator only (a retail Nano X refuses sideloaded apps, status 0x5120).
 
 API level 26 (OS 1.6.x devices), image
 `ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:1f93ba59ee02576f336653c712276f006d4d81f4e355b023489bb7b5bdcf390d`

@@ -2,7 +2,7 @@
 
 All notable changes to the Kadena Ledger app (this maintained continuation) are documented here.
 
-## [2.0.0] — unreleased
+## [2.0.0] — 2026-10-07
 
 The app is rewritten in Rust on Ledger's Rust SDK (`ledger_device_sdk` 1.41.0), with the NBGL
 interface on every device. The C implementation (v1.3.x) is on the `c-v1.3` branch and in the earlier history of this one.
