@@ -2,7 +2,7 @@
 
 All notable changes to the Kadena Ledger app (this maintained continuation) are documented here.
 
-## [2.0.1] — unreleased
+## [2.0.1] — 2026-10-31
 
 Hardening before the external audit, from the internal review of v2.0.0 (findings F-1 to F-8). Every change
 refuses something v2.0.0 accepted, or keeps data off flash; nothing that v2.0.0 refused is accepted now. The
@@ -108,6 +108,16 @@ each of them fails on the v2.0.0 source (run against it before the fix).
   refuses such a document.
 - F-5 (gasLimit length), F-6 (SDK chain code not zeroised) unchanged: fail safe, or outside the app.
 - F-8: fuzzing is not in CI; the corpus replay above runs with the host tests.
+
+### Hardware
+
+- Nano S Plus, OS 1.7.0 (API level 27), the `kadena-2.0.1-nanosplus-os1.7-api27.hex` file: installed (hash read on
+  the device), version, key unchanged from 2.0.0, address review with two commands sent while it was on screen
+  (both 0x6901, screen unchanged), one expired self-transfer signed and verified, three malformed transactions
+  refused before any screen with Blind signing off. 2026-10-31.
+- The other three files (Nano S Plus 1.6.x, Nano Gen5 1.1.x and 1.2.x) are emulator-tested only: the full Ragger
+  suite at their API level on the release ELFs, every screen identical to the committed snapshots. No device of
+  those OS versions was at hand; the Gen5 run follows when one is.
 
 ## [2.0.0] — 2026-10-07
 
