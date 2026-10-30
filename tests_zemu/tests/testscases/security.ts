@@ -298,13 +298,16 @@ export const ONE_VALUE_REFUSED: { name: string; json: string; msg: string }[] = 
   { name: 'second transaction', json: CONTROL_TRANSFER + CONTROL_TRANSFER, msg: 'Unexpected unparsed bytes' },
   { name: 'NUL then JSON', json: CONTROL_TRANSFER + '\u0000{"a":1}', msg: 'Unexpected characters' },
   { name: 'NUL in a value', json: CONTROL_TRANSFER.replace('"nonce":"n"', '"nonce":"n\u0000"'), msg: 'Unexpected characters' },
+  // F3 (v1.3.5): a raw C0 control inside a string is not JSON.
+  { name: 'C0 control in a value', json: CONTROL_TRANSFER.replace('"nonce":"n"', '"nonce":"n\u0001"'), msg: 'Unexpected characters' },
 ]
 export const TRAILING_WHITESPACE = CONTROL_TRANSFER + ' \n\t\r'
 
 // Rule 4: a receiver whose name holds bytes a screen can draw as nothing (NBSP, soft hyphen, C1 NEL,
-// DEL, a C0 control). The review shows each as \xNN; the signed bytes are unchanged.
-export const INVISIBLE_RECEIVER = 'bob\u00a0x\u00ad\u007f\u0001y\u0085'
-export const INVISIBLE_RECEIVER_SHOWN = 'bob\\xC2\\xA0x\\xC2\\xAD\\x7F\\x01y\\xC2\\x85'
+// DEL). The review shows each as \xNN; the signed bytes are unchanged. (A raw C0 control is not JSON
+// and is refused before any screen since v1.3.5, F3: see ONE_VALUE_REFUSED.)
+export const INVISIBLE_RECEIVER = 'bob\u00a0x\u00ad\u007fy\u0085'
+export const INVISIBLE_RECEIVER_SHOWN = 'bob\\xC2\\xA0x\\xC2\\xAD\\x7Fy\\xC2\\x85'
 export const ESCAPED_RECEIVER = deviceScoped(`{"name":"coin.TRANSFER","args":["k:${DEVICE}","${INVISIBLE_RECEIVER}",1.0]}`)
 
 // Rule 5: at most 12 fractional digits in a coin transfer amount.
@@ -362,10 +365,10 @@ const NBSP_ACCOUNT = '\u00a0'.repeat(145)
 export const longReview = (n: number) =>
   deviceScoped(Array.from({ length: n }, () => `{"name":"coin.TRANSFER","args":["${NBSP_ACCOUNT}","${NBSP_ACCOUNT}",1.0]}`).join(','))
 // Pairs of longReview(n): Signing, On Network, Requiring, Of Key, Unscoped Signer, On Chain, Using Gas,
-// and per transfer its title, sender, receiver and amount.
+// Max fee, Paying account (F2, v1.3.5), and per transfer its title, sender, receiver and amount.
 export function longReviewPages(n: number, valueChars: number): number {
   const perValue = Math.ceil(1160 / (valueChars - 1))
-  return 7 + n * (2 + 2 * perValue)
+  return 9 + n * (2 + 2 * perValue)
 }
 
 // A review of exactly `pairs` pairs on a touch model whose value page holds `valueChars - 1`
@@ -375,8 +378,8 @@ export function longReviewPages(n: number, valueChars: number): number {
 // shown as \xC2\xA0. The entry also holds a capability the device cannot verify, so the review is a
 // blind-signing one, with its warning pages.
 // Pairs: Signing, On Network, Requiring, Of Key, Unscoped Signer, per transfer its title, k sender
-// pages, k receiver pages and the amount, then the unverified capability and its WARNING, On Chain
-// and Using Gas.
+// pages, k receiver pages and the amount, then the unverified capability and its WARNING, On Chain,
+// Using Gas, Max fee and Paying account (F2, v1.3.5).
 export function exactReview(pairs: number, valueChars: number): { json: string; transfers: number } {
   const page = valueChars - 1
   const account = (k: number) => {
@@ -387,7 +390,7 @@ export function exactReview(pairs: number, valueChars: number): { json: string; 
   let kmax = 1
   while (bytes(kmax + 1) <= 299) kmax++
   const perTransfer: number[] = []
-  let left = pairs - 9
+  let left = pairs - 11
   while (left > 0) {
     let take = Math.min(2 + 2 * kmax, left)
     // Never leave fewer pairs than the smallest transfer has (title, one page each way, amount).

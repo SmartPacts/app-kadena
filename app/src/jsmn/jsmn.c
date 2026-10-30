@@ -23,6 +23,11 @@
  */
 
 #include "jsmn.h"
+
+// F4: "no enclosing token". toksuper is an int set to -1 by jsmn_init and after a closing bracket;
+// every test of it must compare with the same value (it used to be compared with 0xFFFF, which never
+// matched, so a ',' at the top level read tokens[-1]).
+#define JSMN_NO_SUPER (-1)
 /**
  * Allocates a fresh unused token from the token pool.
  */
@@ -204,7 +209,7 @@ JSMN_API int jsmn_parse(jsmn_parser *parser, const char *js, const size_t len, j
                 if (token == NULL) {
                     return JSMN_ERROR_NOMEM;
                 }
-                if (parser->toksuper != 0xFFFF) {
+                if (parser->toksuper != JSMN_NO_SUPER) {
 #ifdef JSMN_STRICT
                     /* In strict mode an object or array can't become a key */
                     jsmntok_t *t = &tokens[parser->toksuper];
@@ -255,7 +260,7 @@ JSMN_API int jsmn_parse(jsmn_parser *parser, const char *js, const size_t len, j
                         if (token->type != type) {
                             return JSMN_ERROR_INVAL;
                         }
-                        parser->toksuper = -1;
+                        parser->toksuper = JSMN_NO_SUPER;
                         token->end = parser->pos + 1;
                         break;
                     }
@@ -289,7 +294,7 @@ JSMN_API int jsmn_parse(jsmn_parser *parser, const char *js, const size_t len, j
                 parser->toksuper = parser->toknext - 1;
                 break;
             case ',':
-                if (tokens != NULL && parser->toksuper != 0xFFFF && tokens[parser->toksuper].type != JSMN_ARRAY &&
+                if (tokens != NULL && parser->toksuper != JSMN_NO_SUPER && tokens[parser->toksuper].type != JSMN_ARRAY &&
                     tokens[parser->toksuper].type != JSMN_OBJECT) {
 #ifdef JSMN_PARENT_LINKS
                     parser->toksuper = tokens[parser->toksuper].parent;
@@ -322,7 +327,7 @@ JSMN_API int jsmn_parse(jsmn_parser *parser, const char *js, const size_t len, j
             case 'f':
             case 'n':
                 /* And they must not be keys of the object */
-                if (tokens != NULL && parser->toksuper != 0xFFFF) {
+                if (tokens != NULL && parser->toksuper != JSMN_NO_SUPER) {
                     const jsmntok_t *t = &tokens[parser->toksuper];
                     if (t->type == JSMN_OBJECT || (t->type == JSMN_STRING && (t->end - t->start) != 0)) {
                         return JSMN_ERROR_INVAL;
@@ -366,7 +371,7 @@ JSMN_API int jsmn_parse(jsmn_parser *parser, const char *js, const size_t len, j
 JSMN_API void jsmn_init(jsmn_parser *parser) {
     parser->pos = 0;
     parser->toknext = 0;
-    parser->toksuper = -1;
+    parser->toksuper = JSMN_NO_SUPER;
 }
 
 #ifdef __cplusplus

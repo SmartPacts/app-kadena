@@ -78,6 +78,10 @@ parser_error_t _read_json_tx(parser_context_t *c) {
         return parser_unexpected_characters;
     }
 
+    // F3: JSON exactly as the network decodes it, with an object at the root, before the lenient
+    // tokenizer sees it.
+    CHECK_ERROR(json_validate_strict((const char *)c->buffer, c->bufferLen));
+
     CHECK_ERROR(json_parse(&(parser_json_obj->json), (const char *)c->buffer, c->bufferLen));
 
     // Nothing but whitespace may follow the top-level value (the tokenizer accepts several values).
@@ -323,6 +327,9 @@ parser_error_t parser_findDeviceSigner() {
 
     // A capability name is compared by raw bytes (parser_getTxName), so an escape in the name of a
     // capability in the device's own entry would hide, for example, coin.ROTATE. Refuse it.
+    // F1: every capability there must carry an "args" list, as Pact requires to decode it
+    // (Signer.hs: SigCapability reads "args" as a list); without one the review could not tell an
+    // empty coin.GAS from one with arguments.
     uint16_t clist = 0;
     if (object_get_value(json_all, found, JSON_CLIST, &clist) == parser_ok && json_all->tokens[clist].type == JSMN_ARRAY) {
         uint16_t n = 0;
@@ -330,9 +337,14 @@ parser_error_t parser_findDeviceSigner() {
         for (uint16_t i = 0; i < n; i++) {
             uint16_t cap = 0;
             uint16_t name = 0;
+            uint16_t args = 0;
             CHECK_ERROR(array_get_nth_element(json_all, clist, i, &cap));
             if (object_get_value(json_all, cap, JSON_NAME, &name) == parser_ok && span_has_backslash(json_all, name)) {
                 return parser_unexpected_characters;
+            }
+            if (object_get_value(json_all, cap, JSON_ARGS, &args) != parser_ok ||
+                json_all->tokens[args].type != JSMN_ARRAY) {
+                return parser_unexpected_value;
             }
         }
     }
@@ -362,6 +374,12 @@ parser_error_t parser_findPubKeyInClist(uint16_t key_token_index) {
 
     for (uint16_t i = 0; i < clist_element_count; i++) {
         CHECK_ERROR(array_get_nth_element(json_all, clist_token_index, i, &args_token_index));
+        // F1: only the arguments of a transfer the review shows name the account being debited; an
+        // argument of coin.GAS or of any other capability does not scope this signer.
+        const parser_error_t cap_name = parser_getTxName(args_token_index);
+        if (cap_name != parser_name_tx_transfer && cap_name != parser_name_tx_transfer_xchain) {
+            continue;
+        }
         CHECK_ERROR(object_get_value(json_all, args_token_index, JSON_ARGS, &args_token_index));
         CHECK_ERROR(array_get_element_count(json_all, args_token_index, &number_of_args));
 
@@ -603,6 +621,13 @@ static parser_error_t parser_readBytes(parser_context_t *ctx, uint8_t **bytes, u
         }                                                        \
     } while (0)
 
+// Builds the JSON command of a structured transfer (0x24, legacy 0x10) into the template buffer:
+// networkId, the exec payload calling <module>.transfer / transfer-create / transfer-crosschain from
+// the device's k: account, one signer (the device key) scoped to <module>.TRANSFER(_XCHAIN) and
+// coin.GAS, meta (creationTime, ttl, gasLimit, chainId, gasPrice, sender = the device's k: account)
+// and the nonce. <module> is coin, or <namespace>.<module> when both are given (F16). Every field was
+// checked against what its position may hold (parser_validate_chunk_contents), and every append is
+// checked, so a template that does not fit fails closed. The result is parsed and reviewed as JSON.
 static parser_error_t parser_formatTxTransfer(uint16_t address_len, char *address, chunk_t *chunks, uint8_t tx_type) {
     if (address == NULL || chunks == NULL) {
         return parser_unexpected_value;
@@ -614,8 +639,12 @@ static parser_error_t parser_formatTxTransfer(uint16_t address_len, char *addres
     if (chunks[NAMESPACE_POS].len > 0 && chunks[MODULE_POS].len > 0) {
         snprintf(namespace_and_module, sizeof(namespace_and_module), "%.*s.%.*s", chunks[NAMESPACE_POS].len,
                  chunks[NAMESPACE_POS].data, chunks[MODULE_POS].len, chunks[MODULE_POS].data);
-    } else {
+    } else if (chunks[NAMESPACE_POS].len == 0 && chunks[MODULE_POS].len == 0) {
         snprintf(namespace_and_module, sizeof(namespace_and_module), "%s", "coin");
+    } else {
+        // F16: a namespace without a module, or a module without a namespace, names no token. It is
+        // refused rather than silently built as a coin transfer the host did not ask for.
+        return parser_unexpected_value;
     }
 
     APPEND((uint8_t *)"{\"networkId\":\"", 14);

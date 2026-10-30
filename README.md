@@ -11,7 +11,7 @@ This is the maintained continuation of the Kadena Ledger app, originally develop
 upstream repository is no longer maintained, and its last release (v1.2.0) targets Ledger
 API_LEVEL 24, which current Nano S+ firmware (OS 1.6.x = API_LEVEL 26) refuses to install.
 
-This continuation (current release: v1.3.4):
+This continuation (current release: v1.3.5):
 
 - rebuilds the app against the current Ledger SDK (API_LEVEL 27 from v1.3.4; API_LEVEL 26 up to
   v1.3.3) so it installs on today's firmware, for all five supported devices;
@@ -68,10 +68,11 @@ chmod +x ./installer_nanos_plus.sh
 
 This requires Python 3 with `ledgerblue` installed. Pick the release that matches the device's
 OS version: Nano S+ OS 1.7.0 refuses apps built for API level 26 (v1.3.3 and earlier), and v1.3.4
-is built for API level 27. Verify the application hash your device displays during installation:
+and later are built for API level 27. Verify the application hash your device displays during installation:
 
 | Nano S+ OS | API level | Release | Expected application hash (target `nanos2`) |
 |---|---|---|---|
+| 1.7.x | 27 | v1.3.5 | pending (published with the release build) |
 | 1.7.x | 27 | v1.3.4 | `03b75bacb5f651c27c27adcc4be525c4bc9f554797a39555ee7dbdc2f69d9d85` |
 | 1.6.x | 26 | v1.3.3 | `5de2186976638313a881faabe09bbf462df9ef8c5fae9451fa22b1a99d0efed4` |
 
@@ -121,7 +122,7 @@ ships for that device:
 
 ```bash
 docker run --rm -it -v "$(pwd):/app" -w /app \
-  ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder:latest bash
+  ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:8a2f13fa687795c6e7548197c94e2e31b15b28523a6e190a129fdd15eaa03660 bash
 # then, inside the container:
 make -C app -j BOLOS_SDK=$NANOSP_SDK    # Nano S Plus  -> app/build/nanos2/bin/app.elf
 make -C app -j BOLOS_SDK=$NANOX_SDK     # Nano X       -> app/build/nanox/bin/app.elf
@@ -135,11 +136,16 @@ tooling point at an older builder image and are not used for releases or CI.
 
 ## Running tests
 
-- C/C++ unit tests (host build):
+- C/C++ unit tests (host build), as the `Host unit tests and fuzzing` workflow
+  (`.github/workflows/host_tests.yml`) runs them on every push, in Ledger's dev-tools image:
 
     ```bash
-    make cpp_test
+    docker run --rm -v "$(pwd):/app" -w /app \
+      ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:0ed357a6f66a1df949649803ea79e5a224f3f551a496adb3b73af22088781452 \
+      bash -c 'cmake -S . -B build && make -C build -j unittests && cd build && ctest --output-on-failure'
     ```
+
+    The same workflow builds the three libFuzzer harnesses in `fuzz/` and runs each for 60 seconds.
 
 - Functional tests on the Speculos emulator, through Zemu, for all five device models:
 
@@ -231,4 +237,4 @@ The Makefile will build the firmware in a docker container and leave the binary 
 
 ## APDU Specifications
 
-- [APDU Protocol](docs/APDUSPEC.md)
+- [APDU Protocol](docs/apdu.md)

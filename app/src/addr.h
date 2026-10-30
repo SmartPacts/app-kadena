@@ -30,6 +30,10 @@ zxerr_t addr_getNumItems(uint8_t *num_items);
 zxerr_t addr_getItem(int8_t displayIdx, char *outKey, uint16_t outKeyLen, char *outValue, uint16_t outValueLen,
                      uint8_t pageIdx, uint8_t *pageCount);
 
+// A1/F5: the reply of the pending address review (the key copied when the command arrived); returns
+// its length, 0 when no address review is pending.
+uint16_t addr_writeReply(uint8_t *out, uint16_t outLen);
+
 #ifdef __cplusplus
 }
 #endif

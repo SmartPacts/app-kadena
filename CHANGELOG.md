@@ -2,6 +2,116 @@
 
 All notable changes to the Kadena Ledger app (this maintained continuation) are documented here.
 
+## [1.3.5] — 2026-10-30
+
+Pre-audit hardening. Fixes the findings of two internal reviews of v1.3.4: the cold whole-app code
+review (findings F1–F16) and the audit-readiness process review (items A1, A4, C1, C2, C5, P2, P7,
+P8, P13). Each change below names the finding it answers and the test that fails without it; every
+named host test was run against the v1.3.4 code and failed there.
+
+### Security
+
+- **Address review and blind-signing notice take the review lock (A1/F5).** The address
+  confirmation (0x21 with P1 set, legacy 0x01) and the "blind signing required" notice now lock the
+  app exactly as a signing review does: while either waits, every command but GET_VERSION is refused
+  (`0x6986`; from API level 27 the SDK answers `0x6901` first). The address screen and its reply are
+  built from a copy of the public key and derivation path taken when the command arrived, never from
+  the APDU buffer at draw or approval time; the notice replies a copy of its text. An error screen
+  shown during any review now also releases the lock. Tests: `tests/review_lock.cpp`
+  (`AddressReviewLocksEveryCommandButGetVersion`, `AddressReviewShowsAndRepliesTheKeyTakenOnArrival`,
+  `NoticeLocksAndRepliesTheTextTakenWhenShown`, `OneReviewAtATimeAndExactCopySizes`); Zemu
+  `review_lock.test.ts` "A1 address review lock" (0x21 and 0x01, Nano models), which on an API-26
+  build of v1.3.4 got no `0x6986` for the commands sent during the review.
+- **coin.GAS is clear-signed only without arguments (F1).** coin.GAS with arguments is shown as an
+  unverified capability, with its arguments and warning, and needs the Blind signing setting. The
+  check that decides whether the device's entry is scoped to the transfer now looks only at
+  coin.TRANSFER and coin.TRANSFER_XCHAIN arguments. Every capability in the device's entry must carry
+  an `args` list, as Pact requires to decode it. Host vectors `f1_gas_args_need_blind_signing`,
+  `f1_gas_args_blind_on_shown_as_unverified`, `f1_device_key_only_in_other_cap_args_is_unscoped`,
+  `f1_gas_without_args_refused`, `f1_gas_args_not_a_list_refused`. The inherited vector
+  `Gas_with_args`, which pinned the old behaviour, now expects the refusal.
+- **Only JSON the network decodes is reviewed (F3).** Before the tokenizer, the transaction is checked
+  against the JSON grammar: an object at the root, string keys, commas and colons where JSON puts
+  them, no raw byte below 0x20 inside a string, only JSON escapes, JSON numbers and literals, nesting
+  at most 128 levels. Anything else is refused ("Unexpected characters"). This includes a structured
+  transfer (0x24, legacy 0x10) whose gas limit, TTL or creation time is sent with a leading zero
+  ("0123"), which the network would not decode either. Host vectors
+  `f3_unquoted_key_refused`, `f3_root_array_refused`, `f3_missing_comma_refused`,
+  `f3_raw_control_byte_in_string_refused`, `f3_raw_tab_in_string_refused`,
+  `f3_trailing_comma_refused`, `f3_leading_zero_number_refused`, `f3_bare_word_value_refused`,
+  `f3_key_is_a_number_refused`.
+- **Tokenizer sentinel (F4).** The tokenizer's "no enclosing token" value is compared consistently
+  (`JSMN_NO_SUPER`, -1), so a top-level `,` can no longer read `tokens[-1]`. Test:
+  `tests/jsmn_toksuper.cpp` `JsmnToksuper.TopLevelCommaNeverReadsBeforeTheTokenArray` (the token
+  array sits after an unreadable page; v1.3.4 dies of SIGSEGV).
+
+### Added
+
+- **Max fee and paying account (F2).** Every review with a recognised `meta` shows, after
+  "Using Gas", "Max fee" (KDA, gasLimit × gasPrice computed exactly in decimal, without floating
+  point) and, when `meta.sender` is present, "Paying account" (the sender as sent), with the labels
+  and arithmetic of the Rust app. A gas value the product cannot be computed from is refused. The
+  device shows the exact product; the node charges at most that product rounded to 12 decimal places
+  (chainweb-node `gasSupplyOf` / `toCoinUnit`, `roundTo 12`). Tests: `tests/max_fee.cpp`
+  (`MaxFee.ExactProducts`, `MaxFee.Refusals`, the Rust app's table), host vectors
+  `f2_gas_payer_is_another_account`, `f2_max_fee_without_sender`, `f2_gas_price_negative_refused`,
+  `f2_gas_price_41_digits_refused`, `f2_gas_price_string_shown_as_number`.
+
+### Fixed
+
+- **Too-large notice measured as rendered (F6).** An unverified capability whose line (name and
+  arguments, as drawn) exceeds the 300-byte value line now takes the "args cannot be displayed on
+  Ledger" notice and the too-large warning instead of refusing the transaction with "Unrecognized
+  error code". Test: `tests/structured_transfer.cpp`
+  `StructuredTransfer.OverLongCapabilityTakesTheTooLargeNotice` (a 0x24 cross-chain transfer of a
+  token with a 63-character namespace, 32-character module and 32-character amount).
+- **Half-specified token refused (F16).** In the structured transfer (0x24, legacy 0x10), a namespace
+  without a module, or a module without a namespace, is refused ("Unexpected value") instead of
+  becoming a coin transfer. Test: `StructuredTransfer.HalfSpecifiedNamespaceAndModuleRefused`.
+- Two code-scanning notes in `common/tx.c` (`sizeof` over an expression that calls `PIC()`), and the
+  structured-transfer template builder is documented.
+
+### Changed
+
+- **ledger-zxlib 1d9f0dc → 64493a8 (C5/P8, A4)**: the NBGL pair count and the value page count can no
+  longer wrap (5b7026b, 082c1ad), and the NBGL error screen ends the request instead of approving
+  (a64191f). Upstream main beyond 64493a8 changes what the review shows on every model and is not
+  taken in this release. Open upstream at every commit checked: F7 (`update_item_callback` ignores
+  the result of `h_review_update_data`), reachable only if deriving the public key fails while the
+  expert-mode "Sign for Address" item is drawn.
+- **APDU specification** renamed `docs/apdu.md` (the name Ledger's review expects) and brought up to
+  date with this release: the review lock's scope, coin.GAS arguments, the Max fee and Paying account
+  items, the JSON grammar refusal and the half-specified token refusal.
+- **CI (C1/P2, C2/P7, P13):** host unit tests and the three fuzz harnesses run on every push
+  (`host_tests.yml`); every action used by this repository's workflows is pinned by commit SHA (the
+  Zondax/Ledger reusable workflows pin their own); every workflow's token is read-only except the
+  scopes Ledger's reusable workflows declare and `pull-requests: write` for the lint job, whose
+  linter comments on pull requests. The README build command
+  uses the digest-pinned builder image.
+- Host vectors adjusted for the two new review items (the page-bound vectors keep sitting exactly on
+  the 253-pair bound; `review_282_pairs_of_unverified_capabilities_refused` becomes
+  `review_278_pairs_of_unverified_capabilities_refused`).
+
+### Testing
+
+- Host unit tests: 383 tests, 9 suites, all pass (Ledger dev-tools image
+  `sha256:0ed357a6f66a1df949649803ea79e5a224f3f551a496adb3b73af22088781452`).
+- Fuzzing: `parser_parse_json`, `parser_parse_hash`, `parser_parse_transfer`, 60 s each, no finding.
+- Firmware: Nano S+ builds with the API-27 image
+  (`sha256:8a2f13fa687795c6e7548197c94e2e31b15b28523a6e190a129fdd15eaa03660`) and the API-26 image
+  (`sha256:036d9fd1a264a068ea20f2d0edc962ecdbf1bf5861ef75215924abd77f93bf29`), no warning.
+- Static analysis in the API-27 builder image: scan-build (the enforcer's checkers) finds no bug on
+  any of the five devices; clang-tidy 21 with the repository's `.clang-tidy` and clang-format 21
+  report nothing on the 34 app files.
+- Emulator: the full Zemu suite, one model at a time. On the API-26 builds (the builds the public
+  CI's Zemu job tests, with the emulator image the Zemu package pins): Nano S+ 97 passed and
+  1 skipped, Nano X 97 and 1, Stax 98 and 2, Flex 98 and 2, Apex P 98 and 2 (the skipped tests are
+  the touch-only section on the Nano models and the Nano-only address-lock tests on the touch
+  models). On the API-27 Nano S+ build (Speculos v0.27.1): 97 passed, 1 skipped. The snapshots of
+  all five models were regenerated and reviewed; the Max fee screens were checked against the exact
+  decimal product of each fixture.
+- Not run on a device. Not listed by Ledger; not audited by a third party.
+
 ## [1.3.4] — 2026-10-06
 
 Built for Ledger OS API level 27 (Nano S+ 1.7.0, Nano X 2.8.0, Stax 1.11.0, Flex 1.7.0, Apex P

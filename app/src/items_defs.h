@@ -25,6 +25,10 @@
 #define MAX_NUMBER_OF_ITEMS 100
 #endif
 
+// The line every item is rendered into before it is paged (parser_getItem); a render must fit it,
+// NUL included.
+#define ITEM_VALUE_LINE_LEN 300
+
 #define CHECK_ITEMS_ERROR(__CALL)            \
     {                                        \
         items_error_t __err = __CALL;        \
@@ -68,6 +72,7 @@ typedef enum {
     key_transaction_hash,
     key_sign_for_address,
     key_signers,
+    key_max_fee,
 } display_title_t;
 
 typedef struct {

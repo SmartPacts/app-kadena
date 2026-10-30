@@ -50,6 +50,11 @@ typedef struct {
 /// \return Error message
 parser_error_t json_parse(parsed_json_t *parsed_json, const char *buffer, uint16_t bufferLen);
 
+/// F3: checks that the bytes start with one JSON object (RFC 8259 grammar; nesting at most 128
+/// levels): parser_unexpected_characters otherwise. Bytes after the object are not checked here; the
+/// caller refuses anything but whitespace there.
+parser_error_t json_validate_strict(const char *s, uint16_t n);
+
 /// Get the number of elements in the array
 /// \param json
 /// \param array_token_index
@@ -71,7 +76,7 @@ parser_error_t array_get_nth_element(const parsed_json_t *json, uint16_t array_t
 /// \param object_token_index: token index of the parent object
 /// \param number of elements (out)
 /// \return Error message
-parser_error_t object_get_element_count(const parsed_json_t *json, uint16_t object_token_index, uint16_t *number_elements);
+parser_error_t object_get_element_count(const parsed_json_t *json, uint16_t object_token_index, uint16_t *element_count);
 
 /// Get the token index for the nth dictionary key
 /// \param json
@@ -89,7 +94,7 @@ parser_error_t object_get_nth_key(const parsed_json_t *json, uint16_t object_tok
 /// \return token index (out))
 /// \return Error message
 parser_error_t object_get_nth_value(const parsed_json_t *json, uint16_t object_token_index, uint16_t object_element_index,
-                                    uint16_t *token_index);
+                                    uint16_t *key_index);
 
 /// Get the token index of the value that matches the given key
 /// \param json

@@ -16,8 +16,8 @@
 
 // S12 layer 2: approval signs the digest computed while parsing the transaction that the review
 // shows, bound to that review. A later parse, or a change to the bytes in the buffer, must not
-// change it. (The structured-transfer path cannot run here: its template buffer lives in
-// common/tx.c, which the unit-test library does not build. The emulator tests cover it.)
+// change it. (The structured-transfer template path is host-tested in structured_transfer.cpp;
+// its digest binding is the same items.c code as the JSON path's, and the emulator tests cover it.)
 
 #include <blake2.h>
 #include <gtest/gtest.h>

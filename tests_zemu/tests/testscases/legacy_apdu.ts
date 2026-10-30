@@ -43,7 +43,9 @@ export const APDU_TEST_CASES = [
   },
   {
     name: 'test_apdu_legacy_blob_435',
-    json: '{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":""}},"signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","clist":[{"args":["1","2",0],"name":"coin.GAS"},{"args":["1","2",11],"name":"coin.TRANSFER"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad"},"nonce":"xxxx"}',
+    // F1 (v1.3.5): coin.GAS with arguments needs Blind signing, so the nonce carries the bytes its
+    // arguments used to take and the length stays 435.
+    json: '{"networkId":"mainnet01","payload":{"exec":{"data":{},"code":""}},"signers":[{"pubKey":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad","clist":[{"args":[],"name":"coin.GAS"},{"args":["1","2",11],"name":"coin.TRANSFER"}]}],"meta":{"creationTime":1634009214,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-5,"sender":"de12b5e16b93fe81ca4d70656bee4334f2e40f9f28b9796e792d28f2cead74ad"},"nonce":"xxxxxxxxxxxxx"}',
     path: PATH,
     blind: false,
   },

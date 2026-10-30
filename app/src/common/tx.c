@@ -70,8 +70,9 @@ void tx_json_initialize() {
     // Register the template buffer with its ACTUAL size. templete_json is
     // TEMPLATE_JSON_BUFFER_SIZE (1280) bytes and is the last member of storage_t;
     // registering it as FLASH_BUFFER_SIZE (15104) let buffering_json_append write far
-    // past it into adjacent NVRAM. Mirror the raw-buffer call below (sizeof).
-    buffering_json_init((uint8_t *)N_appdata.templete_json, sizeof(N_appdata.templete_json));
+    // past it into adjacent NVRAM. Mirror the raw-buffer call below (sizeof). The sizes are taken from
+    // N_appdata_impl itself: N_appdata goes through PIC(), a call, which sizeof does not evaluate.
+    buffering_json_init((uint8_t *)N_appdata.templete_json, sizeof(N_appdata_impl.templete_json));
 }
 
 void tx_json_reset() { buffering_json_reset(); }
@@ -83,7 +84,7 @@ uint32_t tx_json_get_buffer_length() { return buffering_json_get_buffer()->pos; 
 uint8_t *tx_json_get_buffer() { return buffering_json_get_buffer()->data; }
 
 void tx_initialize() {
-    buffering_init(ram_buffer, sizeof(ram_buffer), (uint8_t *)N_appdata.buffer, sizeof(N_appdata.buffer));
+    buffering_init(ram_buffer, sizeof(ram_buffer), (uint8_t *)N_appdata.buffer, sizeof(N_appdata_impl.buffer));
     tx_json_initialize();
 }
 

@@ -10,10 +10,20 @@ on:
       - master
       - dev
 
+# C1/P2: the token is read-only unless a job below needs more.
+permissions:
+  contents: read
+
 jobs:
   build_application:
     name: Build application using the reusable workflow
-    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_build.yml@v1
+    # The called workflow declares these; a caller granting less fails the run.
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+      packages: read
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_build.yml@f5dd18f90efc3562ad2869fb30027bd9cd21f322 # v1
     with:
       upload_app_binaries_artifact: "compiled_app_binaries"
 
@@ -39,7 +49,7 @@ jobs:
       BUILDER_IMAGE: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder@sha256:036d9fd1a264a068ea20f2d0edc962ecdbf1bf5861ef75215924abd77f93bf29
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -63,7 +73,7 @@ jobs:
           cat app/build/nanos2/bin/app.sha256
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
 
@@ -79,7 +89,7 @@ jobs:
 
       - name: Upload failing snapshots
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: snapshots-tmp-${{ matrix.suite }}
           path: tests_zemu/snapshots-tmp/

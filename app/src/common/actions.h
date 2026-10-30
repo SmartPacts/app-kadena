@@ -18,6 +18,7 @@
 #include <os_io_seproxyhal.h>
 #include <stdint.h>
 
+#include "addr.h"
 #include "apdu_codes.h"
 #include "coin.h"
 #include "crypto.h"
@@ -26,7 +27,6 @@
 #include "zxerror.h"
 
 extern uint16_t action_addrResponseLen;
-extern uint16_t G_error_message_offset;
 
 __Z_INLINE zxerr_t app_fill_address() {
     // Put data directly in the apdu buffer
@@ -67,13 +67,27 @@ __Z_INLINE void app_reject() {
     io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, 2);
 }
 
+// A1/F5: the reply is the key copied when the address command arrived, never the APDU buffer, which
+// another command (GET_VERSION is still answered) may have overwritten while the review was shown.
 __Z_INLINE void app_reply_address() {
-    set_code(G_io_apdu_buffer, action_addrResponseLen, APDU_CODE_OK);
-    io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, action_addrResponseLen + 2);
+    MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
+    const uint16_t len = addr_writeReply(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 2);
+    review_lock_end();
+    if (len == 0) {
+        set_code(G_io_apdu_buffer, 0, APDU_CODE_EXECUTION_ERROR);
+        io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, 2);
+        return;
+    }
+    set_code(G_io_apdu_buffer, len, APDU_CODE_OK);
+    io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, len + 2);
 }
 
+// A1/F5: the reply of the "blind signing required" notice is the text copied when it was shown; any
+// other error screen replies a bare 0x6984. Whatever was pending ends here.
 __Z_INLINE void app_reply_error() {
-    // Use the stored offset to place the error code after the error message
-    set_code(G_io_apdu_buffer, G_error_message_offset, APDU_CODE_DATA_INVALID);
-    io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, G_error_message_offset + 2);
+    MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
+    const uint16_t len = review_lock_notice(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE - 2);
+    review_lock_end();
+    set_code(G_io_apdu_buffer, len, APDU_CODE_DATA_INVALID);
+    io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, len + 2);
 }

@@ -1,6 +1,9 @@
 import { PATH } from '../common'
 import { TransferTxType } from '@zondax/ledger-kadena'
 
+// v1.3.5 (F3): every number in the JSON the device builds must be a JSON number, so the gas limits
+// carry no leading zero (they used to be '0123456789' and similar; the lengths are unchanged, which
+// the legacy length-boundary cases depend on).
 export const TRANSACTIONS_TEST_CASES = [
   {
     name: 'transfer_1',
@@ -29,7 +32,7 @@ export const TRANSACTIONS_TEST_CASES = [
       network: 'testnet040000000',
       chainId: 0,
       gasPrice: '1.011111111111111e-6',
-      gasLimit: '0123456789',
+      gasLimit: '1123456789',
       creationTime: 9876543210,
       ttl: '60000000000000000000',
       nonce: '2022-10-13 07:56:50.893257 UTC',
@@ -86,7 +89,7 @@ export const TRANSACTIONS_TEST_CASES = [
       network: 'testnet040000000',
       chainId: 0,
       gasPrice: '1.011111111111111e-6',
-      gasLimit: '0123456789',
+      gasLimit: '1123456789',
       creationTime: 9876543210,
       ttl: '60000000000000000000',
       nonce: '2022-10-13 07:56:50.893257 UTC',
@@ -108,7 +111,7 @@ export const HANDLER_LEGACY_TEST_CASES = [
       network: 'testnet040000000',
       chainId: 0,
       gasPrice: '1.011111111111111e-6',
-      gasLimit: '0123456789',
+      gasLimit: '1123456789',
       creationTime: 9876543210,
       ttl: '60000000000000000000',
       nonce: '2022-10-13 07:56:50.893257 UTC',
@@ -127,7 +130,7 @@ export const HANDLER_LEGACY_TEST_CASES = [
       network: 'testnet040000000',
       chainId: 0,
       gasPrice: '1.011111111111111e-6',
-      gasLimit: '01234567',
+      gasLimit: '11234567',
       creationTime: 9876543210,
       ttl: '60000000000000000000',
       nonce: '2022-10-13 07:56:50.893257 UTC',
@@ -146,7 +149,7 @@ export const HANDLER_LEGACY_TEST_CASES = [
       network: 'testnet040000000',
       chainId: 0,
       gasPrice: '1.011111111111111e-6',
-      gasLimit: '0123456',
+      gasLimit: '1123456',
       creationTime: 9876543210,
       ttl: '60000000000000000000',
       nonce: '2022-10-13 07:56:50.893257 UTC',

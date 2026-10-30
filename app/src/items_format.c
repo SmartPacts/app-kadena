@@ -18,6 +18,7 @@
 
 #include <zxformat.h>
 
+#include "coin.h"
 #include "common/parser.h"
 #include "crypto.h"
 #include "parser_impl.h"
@@ -246,6 +247,176 @@ items_error_t items_gasToDisplayString(__Z_UNUSED item_t item, char *outVal, uin
 
     snprintf(outVal, outValLen, "at most %.*s at price %.*s", gasLimit_len, gasLimit, gasPrice_len, gasPrice);
 
+    return items_ok;
+}
+
+// F2: the maximum fee, gasLimit x gasPrice, computed exactly in decimal (no floating point), as the
+// Rust app does (kadena-core fee.rs). Each value is a JSON number as the transaction carries it:
+// digits, an optional fraction, an optional exponent (hosts send gas prices such as 1.0e-6). At most
+// FEE_MAX_DIGITS significant digits per value and an exponent of at most FEE_MAX_EXP in magnitude;
+// anything else is not a fee the review can show, and the transaction is refused.
+#define FEE_MAX_DIGITS 40
+#define FEE_MAX_EXP 400
+
+typedef struct {
+    uint8_t digits[FEE_MAX_DIGITS];
+    uint8_t len;
+    int16_t scale;  // the value is digits x 10^(-scale)
+} fee_decimal_t;
+
+static bool fee_isDigit(char c) { return c >= '0' && c <= '9'; }
+
+static bool fee_parse(const char *s, uint16_t n, fee_decimal_t *d) {
+    uint16_t i = 0;
+    d->len = 0;
+    d->scale = 0;
+    while (i < n && fee_isDigit(s[i])) {
+        if (d->len == FEE_MAX_DIGITS) {
+            return false;
+        }
+        d->digits[d->len++] = (uint8_t)(s[i++] - '0');
+    }
+    if (d->len == 0) {
+        return false;
+    }
+    if (i < n && s[i] == '.') {
+        i++;
+        const uint16_t f = i;
+        while (i < n && fee_isDigit(s[i])) {
+            if (d->len == FEE_MAX_DIGITS) {
+                return false;
+            }
+            d->digits[d->len++] = (uint8_t)(s[i++] - '0');
+        }
+        if (i == f) {
+            return false;
+        }
+        d->scale = (int16_t)(i - f);
+    }
+    if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        bool neg = false;
+        if (i < n && (s[i] == '-' || s[i] == '+')) {
+            neg = s[i] == '-';
+            i++;
+        }
+        const uint16_t e0 = i;
+        int16_t e = 0;
+        while (i < n && fee_isDigit(s[i])) {
+            e = (int16_t)((e * 10) + (s[i++] - '0'));
+            if (e > FEE_MAX_EXP) {
+                return false;
+            }
+        }
+        if (i == e0) {
+            return false;
+        }
+        d->scale = (int16_t)(neg ? d->scale + e : d->scale - e);
+    }
+    return i == n;
+}
+
+bool items_isFeeOperand(const char *s, uint16_t n) {
+    fee_decimal_t d;
+    return fee_parse(s, n, &d);
+}
+
+// Writes limit x price in plain decimal (no exponent, no trailing fraction zeros) and a NUL to out.
+// Returns the length written, 0 when either value is not a number or the result does not fit.
+uint16_t items_maxFee(const char *limit, uint16_t limitLen, const char *price, uint16_t priceLen, char *out,
+                      uint16_t outLen) {
+    fee_decimal_t a;
+    fee_decimal_t b;
+    if (out == NULL || outLen == 0 || !fee_parse(limit, limitLen, &a) || !fee_parse(price, priceLen, &b)) {
+        return 0;
+    }
+    // Schoolbook product, most significant digit first; each position holds at most
+    // FEE_MAX_DIGITS * 81 before the carries.
+    uint16_t acc[2 * FEE_MAX_DIGITS] = {0};
+    const uint16_t n = (uint16_t)(a.len + b.len);
+    for (uint16_t i = 0; i < a.len; i++) {
+        for (uint16_t j = 0; j < b.len; j++) {
+            acc[i + j + 1] = (uint16_t)(acc[i + j + 1] + (a.digits[i] * b.digits[j]));
+        }
+    }
+    for (uint16_t k = n - 1; k >= 1; k--) {
+        acc[k - 1] = (uint16_t)(acc[k - 1] + (acc[k] / 10));
+        acc[k] %= 10;
+    }
+    const int16_t scale = (int16_t)(a.scale + b.scale);
+    uint16_t lead = 0;
+    while (lead < n && acc[lead] == 0) {
+        lead++;
+    }
+    const uint16_t *p = acc + lead;
+    const uint16_t plen = n - lead;
+    uint16_t w = 0;
+#define FEE_PUT(c)             \
+    do {                       \
+        if (w + 1 >= outLen) { \
+            return 0;          \
+        }                      \
+        out[w++] = (char)(c);  \
+    } while (0)
+    if (plen == 0) {
+        FEE_PUT('0');
+    } else if (scale <= 0) {
+        for (uint16_t i = 0; i < plen; i++) {
+            FEE_PUT('0' + p[i]);
+        }
+        for (int16_t z = 0; z < -scale; z++) {
+            FEE_PUT('0');
+        }
+    } else {
+        const int16_t int_len = (int16_t)(plen - scale);
+        uint16_t frac_end = plen;
+        while (frac_end > 0 && p[frac_end - 1] == 0) {
+            frac_end--;
+        }
+        if (int_len > 0) {
+            for (int16_t i = 0; i < int_len; i++) {
+                FEE_PUT('0' + p[i]);
+            }
+        } else {
+            FEE_PUT('0');
+        }
+        const uint16_t frac_start = int_len > 0 ? (uint16_t)int_len : 0;
+        if (frac_end > frac_start) {
+            FEE_PUT('.');
+            for (int16_t z = 0; z < -int_len; z++) {
+                FEE_PUT('0');
+            }
+            for (uint16_t i = frac_start; i < frac_end; i++) {
+                FEE_PUT('0' + p[i]);
+            }
+        }
+    }
+#undef FEE_PUT
+    out[w] = '\0';
+    return w;
+}
+
+// F2: "Max fee": KDA <gasLimit x gasPrice>. item.json_token_index is the `meta` object.
+items_error_t items_maxFeeToDisplayString(item_t item, char *outVal, uint16_t outValLen) {
+    const parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+    uint16_t limit_index = 0;
+    uint16_t price_index = 0;
+    PARSER_TO_ITEMS_ERROR(object_get_value(json_all, item.json_token_index, JSON_GAS_LIMIT, &limit_index));
+    PARSER_TO_ITEMS_ERROR(object_get_value(json_all, item.json_token_index, JSON_GAS_PRICE, &price_index));
+    const jsmntok_t *limit = &(json_all->tokens[limit_index]);
+    const jsmntok_t *price = &(json_all->tokens[price_index]);
+
+    const uint16_t prefix_len = sizeof(COIN_TICKER) - 1;
+    if (outValLen <= prefix_len) {
+        return items_data_too_large;
+    }
+    MEMCPY(outVal, COIN_TICKER, prefix_len);
+    const uint16_t fee_len =
+        items_maxFee(json_all->buffer + limit->start, (uint16_t)(limit->end - limit->start), json_all->buffer + price->start,
+                     (uint16_t)(price->end - price->start), outVal + prefix_len, outValLen - prefix_len);
+    if (fee_len == 0) {
+        return items_data_too_large;
+    }
     return items_ok;
 }
 

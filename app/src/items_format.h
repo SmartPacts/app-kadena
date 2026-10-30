@@ -15,6 +15,7 @@
  ********************************************************************************/
 #pragma once
 
+#include <stdbool.h>
 #include <zxmacros.h>
 
 #include "items_defs.h"
@@ -44,6 +45,12 @@ items_error_t items_transferToDisplayString(item_t item, char *outVal, uint16_t 
 items_error_t items_crossTransferToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 items_error_t items_rotateToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 items_error_t items_gasToDisplayString(item_t item, char *outVal, uint16_t outValLen);
+items_error_t items_maxFeeToDisplayString(item_t item, char *outVal, uint16_t outValLen);
+/// F2: true when the text is a JSON number the max-fee product accepts.
+bool items_isFeeOperand(const char *s, uint16_t n);
+/// F2: gasLimit x gasPrice in plain decimal into out (NUL-terminated); 0 when not computable or too long.
+uint16_t items_maxFee(const char *limit, uint16_t limitLen, const char *price, uint16_t priceLen, char *out,
+                      uint16_t outLen);
 items_error_t items_hashToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 items_error_t items_unknownCapabilityToDisplayString(item_t item, char *outVal, uint16_t outValLen);
 items_error_t items_signersToDisplayString(__Z_UNUSED item_t item, char *outVal, uint16_t outValLen);

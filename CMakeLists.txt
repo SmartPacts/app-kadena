@@ -73,7 +73,11 @@ if(ENABLE_FUZZING)
         message(FATAL_ERROR "Fuzz logging enabled")
     endif()
 
-    set(CMAKE_CXX_CLANG_TIDY clang-tidy -checks=-*,bugprone-*,cert-*,clang-analyzer-*,-cert-err58-cpp,misc-*)
+    # clang-tidy alongside the fuzz build when the image has it (Ledger's dev-tools image does not).
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy-21)
+    if(CLANG_TIDY_EXE)
+        set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY_EXE} -checks=-*,bugprone-*,cert-*,clang-analyzer-*,-cert-err58-cpp,misc-*)
+    endif()
 
     if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
         # require at least clang 3.2
@@ -154,6 +158,7 @@ file(GLOB_RECURSE LIB_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/items.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/items_format.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/review_lock.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/app/src/addr.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/parser_impl.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/crypto_helper.c
         ${CMAKE_CURRENT_SOURCE_DIR}/app/src/json/json_parser.c

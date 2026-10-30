@@ -18,6 +18,10 @@ on:
       - master
       - dev
 
+# C1/P2: the token is read-only unless a job below needs more.
+permissions:
+  contents: read
+
 jobs:
   guidelines_enforcer:
     name: Call Ledger guidelines_enforcer
@@ -31,4 +35,10 @@ jobs:
     # RUNNING: a typo or a rename can never silently disable this mandatory
     # check on the public repository.
     if: ${{ !github.event.repository.private }}
-    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_guidelines_enforcer.yml@v1
+    # The called workflow declares these; a caller granting less fails the run.
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+      packages: read
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_guidelines_enforcer.yml@f5dd18f90efc3562ad2869fb30027bd9cd21f322 # v1

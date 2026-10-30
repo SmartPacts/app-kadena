@@ -78,8 +78,13 @@ command (INS 0x24 and legacy INS 0x10):
   owner is not shown, and signing requires the *Blind signing* setting to be enabled (the same
   refusal screen and `0x6984` as hash signing when it is off).
 - For the JSON-signing commands (INS 0x22 and legacy INS 0x03), where the host writes the
-  capability list, the device clear-signs only `coin.GAS`, `coin.TRANSFER` and
-  `coin.TRANSFER_XCHAIN` in the reviewed entry. Any other capability there (`coin.DEBIT`,
+  capability list, the device clear-signs only `coin.GAS` without arguments (`"args": []`),
+  `coin.TRANSFER` and `coin.TRANSFER_XCHAIN` in the reviewed entry. `coin.GAS` with arguments is
+  treated as any other capability below (v1.3.5, F1). Every capability in the reviewed entry must
+  carry an `args` list, as Pact requires to decode it; otherwise the command is refused with
+  `0x6984` (`Unexpected value`; bare on 0x03). Whether the entry is scoped to the transfer shown
+  (no `Unscoped Signer` label) is decided from the `coin.TRANSFER` / `coin.TRANSFER_XCHAIN`
+  arguments only, never from those of `coin.GAS` or another capability. Any other capability there (`coin.DEBIT`,
   `coin.CREDIT`, any other `coin` capability, any other module's capability, a token module's
   `TRANSFER` included) requires the *Blind signing* setting, as `coin.ROTATE` does: with it off the
   command is refused with `0x6984` (`Blind signing mode required`, after the blind-signing screen,
@@ -91,13 +96,19 @@ command (INS 0x24 and legacy INS 0x10):
   code: with it off the command is refused with `0x6984` (`Blind signing mode required` after the
   blind-signing screen on 0x24, bare on 0x10); with it on the review adds
   `WARNING: Capability not verified: <namespace>.<module>.TRANSFER` (or `TRANSFER_XCHAIN`).
-- While a signing review (INS 0x22, 0x23, 0x24, legacy 0x03, 0x04, 0x10) waits for the user, every
-  command except GET_VERSION (INS 0x20) is refused with `0x6986` and changes nothing; the
-  device-information command (CLA 0xE0, INS 0x01) is answered by the system library, and the legacy
-  version command (INS 0x00) is refused. The lock ends when the review is approved or rejected.
+- While a signing review (INS 0x22, 0x23, 0x24, legacy 0x03, 0x04, 0x10), an address review (INS
+  0x21 with `P1` set, legacy 0x01) or the blind-signing-required notice waits for the user (v1.3.5:
+  the address review and the notice too, A1/F5), every command except GET_VERSION (INS 0x20) is
+  refused with `0x6986` and changes nothing; the device-information command (CLA 0xE0, INS 0x01) is
+  answered by the system library, and the legacy version command (INS 0x00) is refused. A command
+  with another CLA (`0x6E00`) or shorter than the 5-byte header (`0x6700`) is answered before this
+  check. The lock ends when the review is approved or rejected, or the notice is dismissed.
   Approval signs the digest computed when the reviewed transaction was parsed (blake2b-256 of the
-  JSON, or the 32 bytes of a hash to sign). If USB power is lost during a review, the lock stays set
-  until the app is reopened, and signing commands are refused with `0x6986` until then.
+  JSON, or the 32 bytes of a hash to sign). The address review shows and replies a copy of the
+  public key and derivation path taken when its command arrived, and the notice replies a copy of
+  its text; neither is read again from the APDU buffer. If USB power is lost while any of them is
+  shown, the lock stays set until the app is reopened, and every command but GET_VERSION is refused
+  with `0x6986` until then.
   From v1.3.4, built for API level 27, the SDK itself answers any command that arrives while a
   previous one still awaits its reply with a bare `0x6901`, before the app sees it: during a
   review, GET_VERSION and signing commands are answered `0x6901`. The `0x6986` answers above are
@@ -114,9 +125,20 @@ command (INS 0x24 and legacy INS 0x10):
   so it would not be the amount shown.
 - In a recognised `meta`, `gasLimit`, `ttl` and `creationTime`, when present, must be plain digits
   (the network reads them as integers): otherwise `0x6984` (`Unexpected characters`; bare on 0x03).
+- With a recognised `meta`, the review shows, after `Using Gas`, `Max fee` (`KDA` and gasLimit ×
+  gasPrice, computed exactly in decimal) and, when `meta.sender` is present, `Paying account` (the
+  sender as sent) (v1.3.5, F2). The device shows the exact product; the node charges at most that
+  product rounded to 12 decimal places (chainweb-node `gasSupplyOf` / `toCoinUnit`, `roundTo 12`).
+  A `gasLimit` or `gasPrice` the product cannot be computed from (not a JSON number, more than 40
+  significant digits, an exponent beyond 400, or a product longer than the value line) is refused
+  with `0x6984` (`Unexpected characters`; bare on 0x03).
 - A command with a `verifiers` field (Pact 5 signature verifiers, which can grant capabilities the
   review cannot show) is refused with `0x6984` (`Unexpected value`; bare on 0x03).
-- The transaction is one JSON value: a NUL byte anywhere is refused with `0x6984` (`Unexpected
+- The transaction is one JSON object, written as RFC 8259 JSON (v1.3.5, F3): anything else (a
+  root that is not an object, an unquoted or non-string key, a missing or extra comma, a raw byte
+  below 0x20 inside a string, an escape JSON does not define, a number or literal outside the JSON
+  grammar such as `0123` or `abc`, nesting deeper than 128 levels) is refused with `0x6984`
+  (`Unexpected characters`). A NUL byte anywhere is refused with `0x6984` (`Unexpected
   characters`), and anything but whitespace after the top-level value with `0x6984` (`Unexpected
   unparsed bytes`); bare on 0x03. Every signed byte is a byte that was parsed and reviewed.
 - Every byte of a displayed value outside printable ASCII (0x20-0x7E) is shown as `\xNN`
@@ -135,10 +157,15 @@ characters`; a bare `0x6984` on legacy 0x10): lowercase-hex recipient; digit-onl
 digit-only gas limit, creation time and TTL (they become the `meta` integers above); an amount with
 a fractional part
 (`digits . digits`: the amount is pasted into the Pact code, where an integer is not a decimal); a
-JSON number (an optional exponent) gas price; Pact identifier characters for namespace and module;
+JSON number (an optional exponent) gas price; Pact identifier characters for namespace and module,
+which are given together or not at all (one without the other is refused with `0x6984`,
+`Unexpected value`, v1.3.5, F16; both empty is a `coin` transfer);
 letters, digits and `-_.` for the network; and printable ASCII without `"` or `\` for the nonce. A
 `coin` transfer's amount then follows the amount rules above (no leading zero, at most 12
 fractional digits).
+The JSON built from the fields must itself be RFC 8259 JSON (v1.3.5, F3), so a gas limit, creation
+time or TTL written with a leading zero (`0600`) is refused with `0x6984` (`Unexpected characters`;
+bare on 0x10).
 
 #### Command streams
 

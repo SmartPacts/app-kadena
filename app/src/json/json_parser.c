@@ -204,6 +204,222 @@ parser_error_t object_get_value(const parsed_json_t *json, uint16_t object_token
     return parser_no_data;
 }
 
+// F3: the transaction must be JSON as the network decodes it (RFC 8259, as aeson reads it): the
+// tokenizer below is lenient (unquoted keys and values, missing commas, raw control bytes in strings
+// and any top-level value all pass it), so the bytes are checked against the grammar first. The root
+// must be an object, and nesting is bounded by JSON_MAX_DEPTH. Bytes from 0x80 up are left to the
+// display, which shows them escaped.
+#define JSON_MAX_DEPTH 128
+#define JSON_IS_OBJECT(level) ((in_object[(level) / 8] >> ((level) % 8)) & 1U)
+
+typedef enum {
+    json_expect_value,
+    json_expect_value_or_close,  // just after '['
+    json_expect_key,             // after ',' in an object
+    json_expect_key_or_close,    // just after '{'
+    json_expect_colon,
+    json_expect_comma_or_close,  // after a value
+} json_expect_t;
+
+static bool json_isDigit(char c) { return c >= '0' && c <= '9'; }
+
+static bool json_isHex(char c) { return json_isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+
+// A string whose opening quote is at s[*i]; on success *i is just past the closing quote.
+static bool json_scanString(const char *s, uint16_t n, uint16_t *i) {
+    uint16_t p = *i + 1;
+    while (p < n) {
+        const uint8_t c = (uint8_t)s[p];
+        if (c == '"') {
+            *i = p + 1;
+            return true;
+        }
+        if (c < 0x20) {
+            return false;
+        }
+        if (c == '\\') {
+            if (p + 1 >= n) {
+                return false;
+            }
+            switch (s[p + 1]) {
+                case '"':
+                case '\\':
+                case '/':
+                case 'b':
+                case 'f':
+                case 'n':
+                case 'r':
+                case 't':
+                    p += 2;
+                    continue;
+                case 'u':
+                    if (p + 5 >= n || !json_isHex(s[p + 2]) || !json_isHex(s[p + 3]) || !json_isHex(s[p + 4]) ||
+                        !json_isHex(s[p + 5])) {
+                        return false;
+                    }
+                    p += 6;
+                    continue;
+                default:
+                    return false;
+            }
+        }
+        p++;
+    }
+    return false;
+}
+
+// -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)? starting at s[*i]; *i ends just past it.
+static bool json_scanNumber(const char *s, uint16_t n, uint16_t *i) {
+    uint16_t p = *i;
+    if (p < n && s[p] == '-') {
+        p++;
+    }
+    if (p >= n || !json_isDigit(s[p])) {
+        return false;
+    }
+    if (s[p] == '0') {
+        p++;
+    } else {
+        while (p < n && json_isDigit(s[p])) {
+            p++;
+        }
+    }
+    if (p < n && s[p] == '.') {
+        p++;
+        if (p >= n || !json_isDigit(s[p])) {
+            return false;
+        }
+        while (p < n && json_isDigit(s[p])) {
+            p++;
+        }
+    }
+    if (p < n && (s[p] == 'e' || s[p] == 'E')) {
+        p++;
+        if (p < n && (s[p] == '+' || s[p] == '-')) {
+            p++;
+        }
+        if (p >= n || !json_isDigit(s[p])) {
+            return false;
+        }
+        while (p < n && json_isDigit(s[p])) {
+            p++;
+        }
+    }
+    *i = p;
+    return true;
+}
+
+static bool json_scanLiteral(const char *s, uint16_t n, uint16_t *i, const char *word, uint16_t len) {
+    if (*i + len > n || MEMCMP(s + *i, word, len) != 0) {
+        return false;
+    }
+    *i += len;
+    return true;
+}
+
+parser_error_t json_validate_strict(const char *s, uint16_t n) {
+    uint8_t in_object[JSON_MAX_DEPTH / 8] = {0};  // one bit per open level: 1 object, 0 array
+    uint16_t depth = 0;
+    json_expect_t expect = json_expect_value;
+    bool root_seen = false;
+    uint16_t i = 0;
+
+    if (s == NULL) {
+        return parser_no_data;
+    }
+    while (i < n) {
+        const char c = s[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            i++;
+            continue;
+        }
+        if (root_seen && depth == 0) {
+            // The root object is complete; what follows it is refused by the caller
+            // (parser_unexpected_unparsed_bytes, _read_json_tx).
+            return parser_ok;
+        }
+        switch (expect) {
+            case json_expect_key_or_close:
+            case json_expect_key:
+                if (c == '}' && expect == json_expect_key_or_close) {
+                    depth--;
+                    i++;
+                    expect = json_expect_comma_or_close;
+                    break;
+                }
+                if (c != '"' || !json_scanString(s, n, &i)) {
+                    return parser_unexpected_characters;
+                }
+                expect = json_expect_colon;
+                break;
+            case json_expect_colon:
+                if (c != ':') {
+                    return parser_unexpected_characters;
+                }
+                i++;
+                expect = json_expect_value;
+                break;
+            case json_expect_comma_or_close:
+                if (c == ',') {
+                    i++;
+                    expect = JSON_IS_OBJECT(depth - 1) ? json_expect_key : json_expect_value;
+                } else if (c == (JSON_IS_OBJECT(depth - 1) ? '}' : ']')) {
+                    depth--;
+                    i++;
+                } else {
+                    return parser_unexpected_characters;
+                }
+                break;
+            case json_expect_value_or_close:
+                if (c == ']') {
+                    depth--;
+                    i++;
+                    expect = json_expect_comma_or_close;
+                } else {
+                    expect = json_expect_value;  // the same character is read again as a value
+                }
+                break;
+            case json_expect_value:
+                if (!root_seen && c != '{') {
+                    return parser_unexpected_characters;  // the root must be an object
+                }
+                if (c == '{' || c == '[') {
+                    if (depth == JSON_MAX_DEPTH) {
+                        return parser_unexpected_characters;
+                    }
+                    if (c == '{') {
+                        in_object[depth / 8] |= (uint8_t)(1U << (depth % 8));
+                    } else {
+                        in_object[depth / 8] &= (uint8_t)~(1U << (depth % 8));
+                    }
+                    depth++;
+                    root_seen = true;
+                    i++;
+                    expect = c == '{' ? json_expect_key_or_close : json_expect_value_or_close;
+                    break;
+                }
+                if (c == '"') {
+                    if (!json_scanString(s, n, &i)) {
+                        return parser_unexpected_characters;
+                    }
+                } else if (c == '-' || json_isDigit(c)) {
+                    if (!json_scanNumber(s, n, &i)) {
+                        return parser_unexpected_characters;
+                    }
+                } else if (!json_scanLiteral(s, n, &i, "true", 4) && !json_scanLiteral(s, n, &i, "false", 5) &&
+                           !json_scanLiteral(s, n, &i, "null", 4)) {
+                    return parser_unexpected_characters;
+                }
+                expect = json_expect_comma_or_close;
+                break;
+            default:
+                return parser_unexpected_characters;
+        }
+    }
+    // The root object, complete.
+    return (root_seen && depth == 0) ? parser_ok : parser_unexpected_characters;
+}
+
 parser_error_t json_parse(parsed_json_t *parsed_json, const char *buffer, uint16_t bufferLen) {
     jsmn_parser parser;
 

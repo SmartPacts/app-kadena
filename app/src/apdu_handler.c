@@ -75,9 +75,6 @@ bool stream_continues(uint8_t ins) {
 
 void stream_restorePath() { MEMCPY(hdPath, stream_path, sizeof(stream_path)); }
 
-// Global variable to store error message offset for custom error display
-uint16_t G_error_message_offset = 0;
-
 void extractHDPath(uint32_t rx, uint32_t offset) {
     // An address command closes a stream of the modern signing commands (not a legacy one).
     if (stream_ins == INS_SIGN || stream_ins == INS_SIGN_HASH || stream_ins == INS_SIGN_TRANSFER) {
@@ -154,6 +151,12 @@ __Z_INLINE void handleGetAddr(volatile uint32_t *flags, volatile uint32_t *tx, u
         THROW(APDU_CODE_DATA_INVALID);
     }
     if (requireConfirmation) {
+        // A1/F5: the review shows and replies a copy of the key and path, and locks the app like a
+        // signing review until it is approved or rejected.
+        if (!review_lock_begin_address(G_io_apdu_buffer, action_addrResponseLen, hdPath, HDPATH_LEN_DEFAULT)) {
+            *tx = 0;
+            THROW(APDU_CODE_DATA_INVALID);
+        }
         view_review_init(addr_getItem, addr_getNumItems, app_reply_address);
         view_review_show(REVIEW_ADDRESS);
         *flags |= IO_ASYNCH_REPLY;
@@ -185,8 +188,10 @@ __Z_INLINE void handleSign(volatile uint32_t *flags, volatile uint32_t *tx, uint
         MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
         MEMCPY(G_io_apdu_buffer, error_msg, error_msg_length);
         *tx += (error_msg_length);
-        if (error_code == parser_blindsign_mode_required) {
-            G_error_message_offset = error_msg_length;
+        // A1/F5: the notice replies a copy of this text when it is dismissed, and locks the app until
+        // then. Should the lock be refused, the text is replied at once.
+        if (error_code == parser_blindsign_mode_required &&
+            review_lock_begin_notice(error_msg, (uint16_t)error_msg_length)) {
             *flags |= IO_ASYNCH_REPLY;
             view_blindsign_error_show();
         }
@@ -235,9 +240,6 @@ void handleTest(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) { 
 void handleApdu(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) {
     volatile uint16_t sw = 0;
 
-    // Reset error message offset at the beginning of each command
-    G_error_message_offset = 0;
-
     BEGIN_TRY {
         TRY {
             if (G_io_apdu_buffer[OFFSET_CLA] != CLA) {
@@ -248,9 +250,9 @@ void handleApdu(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) {
                 THROW(APDU_CODE_WRONG_LENGTH);
             }
 
-            // S12: while a signing review waits for the user, refuse every command but GET_VERSION
-            // (GET_DEVICE_INFO is answered before this dispatcher), before any handler can touch the
-            // pending stream, path or buffers.
+            // S12, A1/F5: while a signing review, an address review or the blind-signing notice waits
+            // for the user, refuse every command but GET_VERSION (GET_DEVICE_INFO is answered before
+            // this dispatcher), before any handler can touch the pending stream, path or buffers.
             if (!review_lock_allows(G_io_apdu_buffer[OFFSET_INS])) {
                 THROW(APDU_CODE_COMMAND_NOT_ALLOWED);
             }

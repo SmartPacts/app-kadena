@@ -41,6 +41,7 @@ static items_error_t items_storeCaution();
 static items_error_t items_storeHashWarning();
 static items_error_t items_storeChainId();
 static items_error_t items_storeUsingGas();
+static items_error_t items_storeFeeAndPayer();
 static items_error_t items_checkTxLengths();
 static items_error_t items_computeHash(tx_type_t tx_type);
 static items_error_t items_storeHash();
@@ -51,8 +52,6 @@ static items_error_t items_storeTxRotateItem(uint16_t transfer_token_index);
 static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t transfer_token_index);
 static items_error_t items_storeRotateWarning();
 static void items_checkIntegerMeta();
-
-#define MAX_ITEM_LENGTH_TO_DISPLAY 256
 
 item_array_t item_array;
 
@@ -87,6 +86,10 @@ static bool unbounded_in_scope = false;
 // network reads these as integers and would round a fraction, so they are refused.
 static bool meta_not_integer = false;
 
+// F2: set when a recognised `meta` holds a gasLimit or gasPrice the "Max fee" product cannot be
+// computed from (not a JSON number, or beyond its bounds). Refused like meta_not_integer.
+static bool fee_not_number = false;
+
 // S12: the digest the device signs. parsed_digest is computed while parsing (blake2b-256 of the JSON
 // the review shows, or the 32 bytes of a hash to sign). When a signing review is shown it is copied
 // to review_digest, which no later parse touches; approval signs exactly review_digest and never
@@ -105,6 +108,7 @@ items_error_t items_initItems() {
     amount_not_plain = false;
     unbounded_in_scope = false;
     meta_not_integer = false;
+    fee_not_number = false;
     MEMZERO(parsed_digest, sizeof(parsed_digest));
     parsed_digest_ready = false;
 
@@ -122,6 +126,8 @@ bool items_blindSignRequired() { return rotate_in_scope || unverified_cap_in_sco
 bool items_amountNotPlain() { return amount_not_plain; }
 
 bool items_metaNotInteger() { return meta_not_integer; }
+
+bool items_feeNotNumber() { return fee_not_number; }
 
 items_error_t items_bindReviewDigest() {
     if (!parsed_digest_ready) {
@@ -235,6 +241,8 @@ items_error_t items_storeItems(tx_type_t tx_type) {
             CHECK_ITEMS_ERROR(items_storeChainId());
 
             CHECK_ITEMS_ERROR(items_storeUsingGas());
+
+            CHECK_ITEMS_ERROR(items_storeFeeAndPayer());
         }
 
         CHECK_ITEMS_ERROR(items_checkTxLengths());
@@ -363,6 +371,7 @@ static items_error_t items_storeAllTransfers() {
     uint16_t clist_token_index = 0;
     uint16_t clist_element_count = 0;
     uint16_t args_element_count = 0;
+    uint16_t args_token_index = 0;
 
     if (parser_getValidClist(&clist_token_index, &clist_element_count) == parser_ok) {
         for (uint16_t i = 0; i < clist_element_count; i++) {
@@ -383,6 +392,15 @@ static items_error_t items_storeAllTransfers() {
                         CHECK_ITEMS_ERROR(items_storeRotateWarning());
                         break;
                     case parser_name_gas:
+                        // F1: coin.GAS is clear-signed only as Pact defines it, with no arguments.
+                        // With arguments it is a capability the review does not render: the
+                        // unknown-capability item, its warning and the Blind signing setting.
+                        PARSER_TO_ITEMS_ERROR(object_get_value(json_all, token_index, JSON_ARGS, &args_token_index));
+                        PARSER_TO_ITEMS_ERROR(array_get_element_count(json_all, args_token_index, &args_element_count));
+                        if (args_element_count > 0) {
+                            *curr_token_idx = token_index;
+                            CHECK_ITEMS_ERROR(items_storeUnknownItem(args_element_count, args_token_index));
+                        }
                         break;
                     default:
                         *curr_token_idx = token_index;
@@ -495,6 +513,50 @@ static items_error_t items_storeUsingGas() {
         INCREMENT_NUM_ITEMS()
     } else {
         *curr_token_idx = 0;
+    }
+
+    return items_ok;
+}
+
+// F2: "Max fee" (gasLimit x gasPrice, in KDA) and "Paying account" (meta.sender), as the Rust app
+// shows them. The gas payer is the account charged the fee; it is shown whoever it is.
+static items_error_t items_storeFeeAndPayer() {
+    parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+    uint16_t meta_token_index = 0;
+
+    PARSER_TO_ITEMS_ERROR(object_get_value(json_all, 0, JSON_META, &meta_token_index));
+    if (items_isNullField(meta_token_index)) {
+        return items_ok;
+    }
+
+    uint16_t limit_index = 0;
+    uint16_t price_index = 0;
+    if (object_get_value(json_all, meta_token_index, JSON_GAS_LIMIT, &limit_index) != parser_ok ||
+        object_get_value(json_all, meta_token_index, JSON_GAS_PRICE, &price_index) != parser_ok) {
+        fee_not_number = true;
+        return items_ok;
+    }
+    const jsmntok_t *limit = &json_all->tokens[limit_index];
+    const jsmntok_t *price = &json_all->tokens[price_index];
+    if (!items_isFeeOperand(json_all->buffer + limit->start, (uint16_t)(limit->end - limit->start)) ||
+        !items_isFeeOperand(json_all->buffer + price->start, (uint16_t)(price->end - price->start))) {
+        fee_not_number = true;
+        return items_ok;
+    }
+
+    item_t *item = &item_array.items[item_array.numOfItems];
+    item->key = key_max_fee;
+    item->json_token_index = meta_token_index;
+    item_array.toString[item_array.numOfItems] = items_maxFeeToDisplayString;
+    INCREMENT_NUM_ITEMS()
+
+    uint16_t sender_index = 0;
+    if (object_get_value(json_all, meta_token_index, JSON_SENDER, &sender_index) == parser_ok) {
+        item = &item_array.items[item_array.numOfItems];
+        item->key = key_paying_gas;
+        item->json_token_index = sender_index;
+        item_array.toString[item_array.numOfItems] = items_stdToDisplayString;
+        INCREMENT_NUM_ITEMS()
     }
 
     return items_ok;
@@ -685,6 +747,44 @@ static items_error_t items_storeRotateWarning() {
     return items_ok;
 }
 
+// F6: the bytes items_unknownCapabilityToDisplayString needs, NUL included, to render the capability
+// `cap_token_index` with its args list `args_token_index` in full: "name: <name>, " then each arg as
+// arg N: "<string>" or arg N: <value>, separated by ", " (or "no args"). It mirrors that renderer's
+// own bounds checks, so a capability measured to fit renders, and one that does not takes the notice.
+static uint32_t items_unknownCapabilityRenderedLen(uint16_t cap_token_index, uint16_t args_token_index) {
+    const parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
+    uint16_t name_index = 0;
+    uint16_t args_count = 0;
+    if (object_get_value(json_all, cap_token_index, JSON_NAME, &name_index) != parser_ok ||
+        array_get_element_count(json_all, args_token_index, &args_count) != parser_ok) {
+        return UINT32_MAX;
+    }
+    const jsmntok_t *name = &json_all->tokens[name_index];
+    uint32_t len = sizeof("name: ") + (uint32_t)(name->end - name->start) + 1;  // "name: <name>, "
+    if (args_count == 0) {
+        return len + sizeof("no args");
+    }
+    for (uint16_t i = 0; i < args_count; i++) {
+        uint16_t arg_index = 0;
+        if (array_get_nth_element(json_all, args_token_index, i, &arg_index) != parser_ok) {
+            return UINT32_MAX;
+        }
+        const jsmntok_t *arg = &json_all->tokens[arg_index];
+        const bool quoted = arg->type == JSMN_STRING;
+        const bool last = i + 1 == args_count;
+        // The renderer reserves sizeof() of each decoration, NUL included; a non-last arg's NUL slot
+        // becomes the separating space.
+        uint32_t decoration = 0;
+        if (last) {
+            decoration = quoted ? sizeof("arg X: \"\"") : sizeof("arg X: ");
+        } else {
+            decoration = quoted ? sizeof("arg X: \"\",") : sizeof("arg X: ,");
+        }
+        len += (uint32_t)(arg->end - arg->start) + decoration;
+    }
+    return len;
+}
+
 static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t transfer_token_index) {
     item_t *item = &item_array.items[item_array.numOfItems];
     parsed_json_t *json_all = &(parser_getParserJsonObj()->json);
@@ -697,8 +797,10 @@ static items_error_t items_storeUnknownItem(uint16_t num_of_args, uint16_t trans
     item_array.numOfUnknownCapabilities++;
     item_array.toString[item_array.numOfItems] = items_unknownCapabilityToDisplayString;
 
-    if (num_of_args > 5 || json_all->tokens[transfer_token_index].end - json_all->tokens[transfer_token_index].start >
-                               MAX_ITEM_LENGTH_TO_DISPLAY) {
+    // F6: the args are shown only when the whole line, capability name included, fits the value
+    // line as items_unknownCapabilityToDisplayString renders it; otherwise the item takes the
+    // "args cannot be displayed" notice (and the review the too-large WARNING).
+    if (num_of_args > 5 || items_unknownCapabilityRenderedLen(cap_token_index, transfer_token_index) > ITEM_VALUE_LINE_LEN) {
         item->can_display = bool_false;
     }
 

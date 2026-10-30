@@ -19,9 +19,13 @@
 #include "app_mode.h"
 #include "coin.h"
 #include "crypto.h"
+#include "review_lock.h"
 #include "zxerror.h"
 #include "zxformat.h"
 #include "zxmacros.h"
+
+_Static_assert(REVIEW_LOCK_KEY_LEN == PUB_KEY_LENGTH, "address copy holds one public key");
+_Static_assert(REVIEW_LOCK_PATH_LEN == HDPATH_LEN_DEFAULT, "address copy holds one full path");
 
 zxerr_t addr_getNumItems(uint8_t *num_items) {
     zemu_log_stack("addr_getNumItems");
@@ -32,14 +36,21 @@ zxerr_t addr_getNumItems(uint8_t *num_items) {
     return zxerr_ok;
 }
 
+// A1/F5: the review shows the key and path copied when the command arrived (review_lock_begin_address),
+// never the APDU buffer or the global path, which a later command could change while it is on screen.
 zxerr_t addr_getItem(int8_t displayIdx, char *outKey, uint16_t outKeyLen, char *outVal, uint16_t outValLen, uint8_t pageIdx,
                      uint8_t *pageCount) {
     ZEMU_LOGF(50, "[addr_getItem] %d/%d\n", displayIdx, pageIdx)
+    const uint8_t *key = review_lock_address_key();
+    const uint32_t *path = review_lock_address_path();
+    if (key == NULL || path == NULL) {
+        return zxerr_no_data;
+    }
     char address[(2 * PUB_KEY_LENGTH) + 1] = {0};
     switch (displayIdx) {
         case 0:
             snprintf(outKey, outKeyLen, "Address");
-            if (array_to_hexstr(address, sizeof(address), G_io_apdu_buffer, PUB_KEY_LENGTH) == 0) {
+            if (array_to_hexstr(address, sizeof(address), key, PUB_KEY_LENGTH) == 0) {
                 return zxerr_unknown;
             }
             pageString(outVal, outValLen, address, pageIdx, pageCount);
@@ -51,11 +62,22 @@ zxerr_t addr_getItem(int8_t displayIdx, char *outKey, uint16_t outKeyLen, char *
 
             snprintf(outKey, outKeyLen, "Your Path");
             char buffer[300];
-            bip32_to_str(buffer, sizeof(buffer), hdPath, HDPATH_LEN_DEFAULT);
+            bip32_to_str(buffer, sizeof(buffer), path, HDPATH_LEN_DEFAULT);
             pageString(outVal, outValLen, buffer, pageIdx, pageCount);
             return zxerr_ok;
         }
         default:
             return zxerr_no_data;
     }
+}
+
+// A1/F5: writes the reply of the pending address review (the copied key) to out; returns its length,
+// 0 when no address review is pending or out is too small.
+uint16_t addr_writeReply(uint8_t *out, uint16_t outLen) {
+    const uint8_t *key = review_lock_address_key();
+    if (key == NULL || out == NULL || outLen < PUB_KEY_LENGTH) {
+        return 0;
+    }
+    MEMCPY(out, key, PUB_KEY_LENGTH);
+    return PUB_KEY_LENGTH;
 }

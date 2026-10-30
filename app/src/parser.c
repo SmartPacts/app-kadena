@@ -117,8 +117,9 @@ parser_error_t parser_validate(parser_context_t *ctx) {
     // any screen.
     // The same for a gasLimit, ttl or creationTime that is not plain digits (the network reads them as
     // integers). Checked before the items are rendered, so an over-long value of that kind is refused
-    // for its form, as the Rust app does.
-    if (items_amountNotPlain() || items_metaNotInteger()) {
+    // for its form, as the Rust app does. And a gasLimit or gasPrice the max fee (F2) cannot be computed
+    // from is refused the same way.
+    if (items_amountNotPlain() || items_metaNotInteger() || items_feeNotNumber()) {
         return parser_unexpected_characters;
     }
 
@@ -233,7 +234,7 @@ parser_error_t parser_getItem(const parser_context_t *ctx, uint8_t displayIdx, c
     *pageCount = 1;
     uint8_t numItems = 0;
     item_array_t *item_array = items_getItemArray();
-    char tempVal[300] = {0};
+    char tempVal[ITEM_VALUE_LINE_LEN] = {0};
     CHECK_ERROR(parser_getNumItems(ctx, &numItems))
     CHECK_APP_CANARY()
 
@@ -297,7 +298,10 @@ static parser_error_t parser_getItemKey(uint8_t displayIdx, char *outKey, uint16
             strncpy(outKey, "Chain ID", outKeyLen);
             break;
         case key_paying_gas:
-            strncpy(outKey, "Paying Gas", outKeyLen);
+            strncpy(outKey, "Paying account", outKeyLen);
+            break;
+        case key_max_fee:
+            strncpy(outKey, "Max fee", outKeyLen);
             break;
         case key_from:
             strncpy(outKey, "From", outKeyLen);

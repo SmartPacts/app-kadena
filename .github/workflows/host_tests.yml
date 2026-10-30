@@ -1,0 +1,76 @@
+name: Host unit tests and fuzzing
+
+# C2/P7: the C++ host unit tests (tests/, the `unit_directory` of ledger_app.toml) and the three
+# libFuzzer harnesses (fuzz/) run on every push, in the pinned dev-tools image.
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - master
+      - dev
+
+permissions:
+  contents: read
+
+env:
+  DEV_TOOLS_IMAGE: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:0ed357a6f66a1df949649803ea79e5a224f3f551a496adb3b73af22088781452
+
+jobs:
+  unit_tests:
+    name: Host unit tests (cmake, ctest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: recursive
+
+      - name: Build and run the unit tests
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app "$DEV_TOOLS_IMAGE" bash -c '
+            set -eu
+            cmake -S . -B build
+            make -C build -j"$(nproc)" unittests
+            cd build && ctest --output-on-failure'
+
+  fuzz:
+    name: Fuzz harnesses (60 s each)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: recursive
+
+      - name: Build and run the fuzzers
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app "$DEV_TOOLS_IMAGE" bash -c '
+            set -eu
+            # The image ships clang 21 without the libFuzzer and sanitizer runtimes.
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libclang-rt-21-dev
+            cmake -S . -B build-fuzz -DENABLE_FUZZING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+            for t in parser_parse_json parser_parse_hash parser_parse_transfer; do
+              make -C build-fuzz -j"$(nproc)" "fuzz-$t"
+            done
+            export ASAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+            export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+            for t in parser_parse_json parser_parse_hash parser_parse_transfer; do
+              mkdir -p "build-fuzz/corpus-$t" "build-fuzz/artifacts-$t"
+              "./build-fuzz/fuzz-$t" -max_total_time=60 -max_len=17000 -rss_limit_mb=2048 \
+                "-artifact_prefix=build-fuzz/artifacts-$t/" "build-fuzz/corpus-$t"
+            done'
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fuzz-artifacts
+          path: build-fuzz/artifacts-*/
+          if-no-files-found: ignore

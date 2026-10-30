@@ -260,3 +260,136 @@ describe.each(S12_CASES)('S12 review lock', function (c) {
     }
   })
 })
+
+// ---- A1/F5: a pending address review locks the app ----------------------------------------------
+// While an address review waits, GET_VERSION is answered and every other command (an address
+// command for another path, a signing command, a legacy address command) is refused with a bare
+// 0x6986 on an API level 26 build (0x6901 from the SDK at level 27, before the app sees them). The
+// screen is drawn from the copy of the key taken when the command arrived, so stepping off the page
+// and back redraws exactly the same screen, and approval replies that key. Which test catches which
+// change:
+// - handleGetAddr / legacy_handleGetAddr not taking the lock: THIS test on an API level 26 build;
+//   tests/review_lock.cpp (AddressReviewLocksEveryCommandButGetVersion) for the lock kind;
+// - addr_getItem or the reply reading the APDU buffer: THIS test (the redraw and the reply) on an
+//   API level 26 build; tests/review_lock.cpp (AddressReviewShowsAndRepliesTheKeyTakenOnArrival).
+// Nano models only: the redraw steps use the Nano buttons.
+
+function pathLE(path: number[]): Buffer {
+  const b = Buffer.alloc(4 * path.length)
+  path.forEach((v, i) => b.writeUInt32LE(v >>> 0, 4 * i))
+  return b
+}
+
+const HARDENED = 0x80000000
+const PATH_0 = [HARDENED + 44, HARDENED + 626, HARDENED + 0, 0, 0] // m/44'/626'/0'/0/0 = PATH
+const PATH_1 = [HARDENED + 44, HARDENED + 626, HARDENED + 1, 0, 0]
+
+type AddrCase = { name: string; show: Buffer; reply: (pk: string) => string }
+const A1_CASES: AddrCase[] = [
+  {
+    name: '0x21',
+    show: Buffer.concat([Buffer.from([0x00, 0x21, 0x01, 0x00, 0x14]), pathLE(PATH_0)]),
+    reply: pk => pk + '9000',
+  },
+  {
+    name: '0x01',
+    show: Buffer.concat([Buffer.from([0x00, 0x01, 0x00, 0x00, 0x15, 0x05]), pathLE(PATH_0)]),
+    reply: pk => '20' + pk + '9000',
+  },
+]
+const A1_INTERLEAVED: Buffer[] = [
+  Buffer.from([0x00, 0x20, 0x00, 0x00, 0x00]), // GET_VERSION
+  Buffer.concat([Buffer.from([0x00, 0x21, 0x00, 0x00, 0x14]), pathLE(PATH_1)]), // GET_ADDR, other path
+  Buffer.concat([Buffer.from([0x00, 0x22, 0x00, 0x00, 0x14]), pathLE(PATH_0)]), // SIGN, first chunk
+  Buffer.concat([Buffer.from([0x00, 0x02, 0x00, 0x00, 0x15, 0x05]), pathLE(PATH_1)]), // legacy GET_PUBKEY
+]
+const NANO_MODELS = models.filter(m => m.name === 'nanosp' || m.name === 'nanox')
+
+describe.each(A1_CASES)('A1 address review lock', function (c) {
+  if (NANO_MODELS.length === 0) {
+    // No Nano model selected (ZEMU_MODELS): jest refuses an empty .each table.
+    test.skip('no Nano model selected', () => undefined)
+    return
+  }
+  test.concurrent.each(NANO_MODELS)(`%s locks a pending ${c.name} address review and shows its own copy`, async function (m) {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const t = sim.getTransport()
+      const pk = (await new KadenaApp(t).getAddressAndPubKey(PATH, false)).pubkey.toString('hex')
+      const logged: string[] = []
+      const write = process.stdout.write.bind(process.stdout)
+      ;(process.stdout as any).write = (chunk: any, ...rest: any[]) => {
+        logged.push(String(chunk))
+        return write(chunk, ...rest)
+      }
+      const replies = (from: number) =>
+        logged
+          .slice(from)
+          .join('')
+          .split('\n')
+          .map(l => /apdu: < ([0-9a-f]+)/.exec(l)?.[1])
+          .filter((r): r is string => !!r)
+      let duringReview: string[] = []
+      let approvedReply = ''
+      let before: Buffer = Buffer.alloc(0)
+      let after: Buffer = Buffer.alloc(0)
+      try {
+        await sim.deleteEvents()
+        restApdu(sim, c.show).catch(() => undefined)
+        await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+        // The first page of the address.
+        await sim.clickRight()
+        await Zemu.sleep(500)
+        before = (await sim.snapshot()).data
+        const mark = logged.length
+        for (const a of A1_INTERLEAVED) {
+          restApdu(sim, a).catch(() => undefined)
+          await Zemu.sleep(1000)
+        }
+        duringReview = replies(mark)
+        // While the review was pending: GET_VERSION answered (12 bytes + 9000) and every other command
+        // refused with a bare 0x6986; from API level 27 the SDK refuses all of them with 0x6901.
+        expect(duringReview.length).toEqual(A1_INTERLEAVED.length)
+        if (apiLevel(m.path) >= 27) {
+          expect(duringReview).toEqual(A1_INTERLEAVED.map(() => '6901'))
+        } else {
+          expect(duringReview[0].slice(-4)).toEqual('9000')
+          expect(duringReview[0].length / 2).toEqual(14)
+          expect(duringReview.slice(1)).toEqual(A1_INTERLEAVED.slice(1).map(() => '6986'))
+        }
+        // Step off the page and back: the page is drawn again, from the copy.
+        await sim.clickRight()
+        await sim.clickLeft()
+        await Zemu.sleep(500)
+        after = (await sim.snapshot()).data
+        await sim.navigateUntilText('.', `tmp-${m.prefix.toLowerCase()}-a1-${c.name}`, sim.startOptions.approveKeyword, true, false)
+        await Zemu.sleep(1000)
+        if (apiLevel(m.path) >= 27) {
+          // The Nano emulator holds the approval's reply until the next APDU arrives (see S12 above);
+          // GET_VERSION collects it. At API level 26 the reply has no request left to receive it in
+          // the emulator, as in S12; that it is the copied key is pinned by tests/review_lock.cpp.
+          if (replies(mark).length < A1_INTERLEAVED.length + 1) {
+            await rawExchange(t, Buffer.from([0x00, 0x20, 0x00, 0x00, 0x00]))
+          }
+          approvedReply = replies(mark)[A1_INTERLEAVED.length] ?? ''
+        }
+      } finally {
+        ;(process.stdout as any).write = write
+      }
+
+      // The same screen, drawn again after the other commands arrived.
+      expect(after.equals(before)).toEqual(true)
+      // Approval replied the key of the path the review was opened with.
+      if (apiLevel(m.path) >= 27) {
+        expect(approvedReply).toEqual(c.reply(pk))
+      }
+
+      // The lock was released: commands run again.
+      const again = await new KadenaApp(t).getAddressAndPubKey(PATH, false)
+      expect(again.pubkey.toString('hex')).toEqual(pk)
+    } finally {
+      await sim.close()
+    }
+  })
+})

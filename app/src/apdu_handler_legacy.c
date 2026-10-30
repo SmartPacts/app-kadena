@@ -77,18 +77,21 @@ void legacy_app_sign_transference() {
     }
 }
 
+// A1/F5: the reply is the key copied when the address command arrived (see app_reply_address).
 void legacy_app_reply_address() {
-    if (action_addrResponseLen + 1 > sizeof(G_io_apdu_buffer)) {
-        THROW(APDU_CODE_OUTPUT_BUFFER_TOO_SMALL);
+    MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
+    // Room for the length byte in front of the key.
+    const uint16_t len = addr_writeReply(G_io_apdu_buffer + 1, IO_APDU_BUFFER_SIZE - 3);
+    review_lock_end();
+    if (len == 0) {
+        set_code(G_io_apdu_buffer, 0, APDU_CODE_EXECUTION_ERROR);
+        io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, 2);
+        return;
     }
+    G_io_apdu_buffer[0] = (uint8_t)len;
 
-    // Add the pubkey length to the beginning of the buffer
-    MEMMOVE(G_io_apdu_buffer + 1, G_io_apdu_buffer, action_addrResponseLen);
-    G_io_apdu_buffer[0] = action_addrResponseLen;
-    action_addrResponseLen += 1;
-
-    set_code(G_io_apdu_buffer, action_addrResponseLen, APDU_CODE_OK);
-    io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, action_addrResponseLen + 2);
+    set_code(G_io_apdu_buffer, len + 1, APDU_CODE_OK);
+    io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, len + 1 + 2);
 }
 
 void legacy_extractHDPath(uint8_t *buffer, uint32_t rx, uint32_t offset, uint8_t check_len) {
@@ -413,6 +416,11 @@ void legacy_handleGetAddr(volatile uint32_t *flags, volatile uint32_t *tx, uint3
         THROW(APDU_CODE_DATA_INVALID);
     }
     if (requireConfirmation) {
+        // A1/F5: as handleGetAddr, a copy of the key and path, and the review lock.
+        if (!review_lock_begin_address(G_io_apdu_buffer, action_addrResponseLen, hdPath, HDPATH_LEN_DEFAULT)) {
+            *tx = 0;
+            THROW(APDU_CODE_DATA_INVALID);
+        }
         view_review_init(addr_getItem, addr_getNumItems, legacy_app_reply_address);
         view_review_show(REVIEW_ADDRESS);
         *flags |= IO_ASYNCH_REPLY;
@@ -454,9 +462,11 @@ void legacy_handleSignTransaction(volatile uint32_t *flags, volatile uint32_t *t
             MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
             MEMCPY(G_io_apdu_buffer, error_msg, error_msg_length);
             *tx += (error_msg_length);
-            G_error_message_offset = error_msg_length;
-            *flags |= IO_ASYNCH_REPLY;
-            view_blindsign_error_show();
+            // A1/F5: the notice replies a copy of this text and locks the app until it is dismissed.
+            if (review_lock_begin_notice(error_msg, (uint16_t)error_msg_length)) {
+                *flags |= IO_ASYNCH_REPLY;
+                view_blindsign_error_show();
+            }
             THROW(APDU_CODE_DATA_INVALID);
         }
         tx_reset();
@@ -495,8 +505,9 @@ void legacy_handleSignHash(volatile uint32_t *flags, volatile uint32_t *tx, uint
         MEMZERO(G_io_apdu_buffer, IO_APDU_BUFFER_SIZE);
         MEMCPY(G_io_apdu_buffer, error_msg, error_msg_length);
         *tx += (error_msg_length);
-        if (error_code == parser_blindsign_mode_required) {
-            G_error_message_offset = error_msg_length;
+        // A1/F5: the notice replies a copy of this text and locks the app until it is dismissed.
+        if (error_code == parser_blindsign_mode_required &&
+            review_lock_begin_notice(error_msg, (uint16_t)error_msg_length)) {
             *flags |= IO_ASYNCH_REPLY;
             view_blindsign_error_show();
         }

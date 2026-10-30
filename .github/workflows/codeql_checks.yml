@@ -13,6 +13,10 @@ on:
       - '.github/workflows/*.yml'
       - 'tests/*'
 
+# C1/P2: the token is read-only unless a job below needs more.
+permissions:
+  contents: read
+
 jobs:
   analyse:
     name: Call Ledger CodeQL analysis
@@ -26,5 +30,11 @@ jobs:
     # true and the job still executes. A guard that can silently switch this off
     # in the public repo would be worse than the failure it fixes.
     if: ${{ !github.event.repository.private }}
-    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_codeql_checks.yml@v1
-    secrets: inherit
+    # The called workflow declares these; a caller granting less fails the run.
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_codeql_checks.yml@f5dd18f90efc3562ad2869fb30027bd9cd21f322 # v1
+    # No secrets passed: the called workflow's only secret is an optional token for checking out
+    # private repositories, and this one is public (it falls back to the job token).

@@ -9,8 +9,12 @@ on:
       - master
       - dev
 
+# C1/P2: the token is read-only unless a job below needs more.
+permissions:
+  contents: read
+
 jobs:
   ledger-check-version:
-    uses: Zondax/_workflows/.github/workflows/_ledger_check_version.yml@v3
+    uses: Zondax/_workflows/.github/workflows/_ledger_check_version.yml@6d3659c47642b775a86636ae5bedb2da8a1e6f8c # v3
     with:
       runs-on: ${{ github.repository_owner == 'zondax' && 'zondax-runners' || 'ubuntu-latest' }}

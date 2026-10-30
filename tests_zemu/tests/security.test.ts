@@ -1329,6 +1329,11 @@ describe('v1.3.2 rules 6 and 7: verifiers, integer gas fields', function () {
 
 describe('v1.3.2: a touch-screen review must fit the display', function () {
   const touch = models.filter(m => isTouchDevice(m.name))
+  if (touch.length === 0) {
+    // No touch model selected (ZEMU_MODELS): jest refuses an empty .each table.
+    test.skip('no touch model selected', () => undefined)
+    return
+  }
 
   // 22 transfers: about 400 pairs, which the display's 8-bit counts would wrap (the review would end
   // early and sign items never shown). Refused before any screen, with Blind signing on or off.
