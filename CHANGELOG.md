@@ -2,6 +2,100 @@
 
 All notable changes to the Kadena Ledger app (this maintained continuation) are documented here.
 
+## [2.0.1] — unreleased
+
+Hardening before the external audit, from the internal review of v2.0.0 (findings F-1 to F-8). Every change
+refuses something v2.0.0 accepted, or keeps data off flash; nothing that v2.0.0 refused is accepted now. The
+`docs/apdu.md` numbers (28 to 30) name the rules; the host tests named here are in `kadena-core/tests/`, and
+each of them fails on the v2.0.0 source (run against it before the fix).
+
+### Security changes
+
+- F-1, apdu.md rule 29 — the values a review shows as a transfer or as the fee's are plain JSON strings. A
+  backslash in the sender, receiver or target chain of a clear-signed `coin.TRANSFER` (3 arguments) or
+  `coin.TRANSFER_XCHAIN` (4 arguments), in `meta.sender`, `meta.chainId` or `networkId`, or (expert mode) in a
+  continuation's Pact ID, is refused with `Unexpected characters` (0x6984; bare on 0x03), whatever the
+  settings; so is any of those values that is not a JSON string, which v2.0.0 showed as raw JSON (`On Network:
+  {"a":"b"}`), and an expert-mode Step that is not a non-negative integer in plain digits (`{"a":"b"}`,
+  `"1"`, `1.5`, `-1`, `\u0031`). Why: the screen shows the raw text (`To: k:\u0030…`) while the
+  node decodes it (`k:0…`), so the account the user approves is not literally the one the node reads. Refused
+  rather than sent to blind signing, as escaped keys and capability names already are (18). Escapes in other
+  values (the nonce, the code, the arguments of a capability the review cannot verify) are shown as before.
+  Tests: `review_scope::f1_escapes_in_shown_transfer_and_meta_values_are_refused` (nine cases, OFF and ON,
+  0x22 and 0x03; plus controls that stay clear-signed and an escaped `coin.DEBIT` argument still shown),
+  `review_scope::f1_shown_values_are_strings` (one case per shown position),
+  `review_scope::f1_expert_pact_id_and_step_are_unescaped`.
+- F-3, apdu.md rule 28 — strict JSON structure. The tokenizer the app uses (`jsmn::parse_strict`; `jsmn::parse`
+  stays the C port for the C test vectors) refuses, with `Unexpected characters`, a document whose top-level
+  value is not an object, an object key that is not a string, a missing comma between members or elements, a
+  leading or trailing comma, a missing colon, a raw byte below 0x20 inside a string, and a capability of the
+  device's signer entry that is not an object (the member lookups walk any container in pairs, so v2.0.0
+  reviewed `["args",[…],"name","coin.TRANSFER"]` as a coin transfer, clear-signed). Why: the node decodes
+  the command with aeson (pact-5 `Command/Types.hs`, `eitherDecodeStrict'`), which follows JSON's grammar
+  (RFC 8259; aeson 2.2.3.0 `Decoding/ByteString.hs` refuses a raw control character in a string), while
+  v2.0.0 reviewed these documents; for one,
+  a top-level array of alternating keys and values was reviewed and clear-signed as if it were the command
+  object. Such a signature could never execute, but the review must not rest on the node rejecting what the
+  device showed. A document both accept gives the same tokens as before. Tests:
+  `review_scope::f3_non_strict_json_is_refused` (19 shapes, OFF and ON, 0x22 and 0x03, plus valid documents
+  that must stay accepted) and `sign_json::f3_fuzz_corpus_replay` (below).
+- F-4, apdu.md rule 30 — a `meta` without `sender`, or one that is not an object, is refused with `Invalid meta
+  field` (0x6984; bare on 0x03). pact-5 reads every `meta` key as required (`StableEncoding.hs`, `PublicMeta`
+  FromJSON), and the review shows `sender` as the paying account; v2.0.0 clear-signed a `meta` without it, and
+  a `meta` written as a flat array of keys and values (`["creationTime",0,"ttl",28800,…]`, five or six keys)
+  as if it were the object. A `null` or missing `meta` keeps the CAUTION; the string `"null"` is refused like
+  any other string. A `meta` of one to four of the other keys, refused in v2.0.0 as `Unrecognized error
+  code`, is now refused as `Invalid meta field`. Tests: `review_scope::f4_meta_without_sender_is_refused`,
+  `sign_json::meta_rules`.
+- F-7 — release builds check integer overflow (`overflow-checks = true`, `.cargo/config.toml`). Every
+  arithmetic path on host data traced in the review is bounded or explicitly `wrapping_*`; with the checks, a
+  future slip panics (0xE000, the app exits) instead of wrapping. Host tests already ran with overflow checks.
+  Evidence that the setting reaches the build: it changes the crate hash in the symbol names and adds 1176
+  bytes of code on Nano S+ and 1056 on Nano X (API level 27, below).
+
+### Flash
+
+- F-2 (in part) — the structured-transfer template (0x24, 0x10) is kept in the last 1280 bytes of the
+  8192-byte RAM transaction buffer instead of being written to flash on every command, so a host can no longer
+  wear the flash with structured transfers. No RAM is added: the transfer body sits at the start of the same
+  buffer and is at most 3073 bytes (`transfer::build` reads it to the end; a type byte and 12 fields of at most
+  255 bytes), checked at compile time in `src/platform.rs`, and it is not read again once the template is built.
+  The flash store loses the template's 1280 bytes: the install `dataSize` falls from 23040 to 22016 (Nano S+)
+  and from 21760 to 20480 (Nano X). Pinned by the Ragger structured-transfer tests (`tests/test_transfer.py`),
+  which verify every signature over the JSON a host builds on its own; no test observes the absence of the
+  flash write. Still as before: a JSON transaction over 8192 bytes is moved to flash, as in the C app.
+
+### Tests
+
+- `sign_json::f3_fuzz_corpus_replay` (F-3, F-8): `cargo-fuzz` is not in the pinned image, so the 175-file fuzz
+  seed corpus is replayed through the fuzz target's steps with both token caps (110, 768): no panic, and every
+  input the device would review is accepted by a strict JSON decoder (serde_json, standing in for aeson). On
+  the v2.0.0 source 6 reviewed inputs failed that (the kept `crash-fedd1aaebbae43ce` among them); now 74 of 175
+  are reviewed and none fails. A replay of fewer than 100 files fails.
+- Ragger `test_review_interrupt.py::test_command_during_address_review_is_refused_and_the_address_is_unchanged`
+  (review gap P14): while an address waits for confirmation, a GET_ADDR and a signing command get 0x6901, the
+  address screen does not change, and confirming returns the requested key. This is SDK behaviour already in
+  2.0.0; the test pins it.
+- Ragger `test_review_scope.py::test_v201_refusals`: the three refusals on the emulated device (status word and
+  text), three F-1, four F-3 and two F-4 cases. `test_v27_unknown_meta_key_still_needs_blind_signing` keeps its
+  seventh-key case; its key-instead-of-`sender` case is now an F-4 refusal.
+- The version is 2.0.1 (GET_VERSION, `test_version_address.py`, and the About screen).
+
+### Known, not changed
+
+- JSON a node rejects but the device still reviews (apdu.md rule 28): a primitive that is not a JSON literal
+  (`tru`, `01`, `1.`) where the review does not check it, and bytes that are not valid UTF-8 inside a string
+  (shown as `\xNN`). Amounts and the integer `meta` fields are checked (15, 24). Such a signature cannot
+  execute. A structured transfer whose gas limit, creation time or ttl has a leading zero (the C Zemu vectors
+  send `0123456789`) still builds a template the node rejects; refusing it would change the C vectors.
+- The pairwise member lookups still accept other containers where the review does not require a kind (found
+  by reading the code, not tested): a transfer's `args` written as an object cannot clear-sign (the amount
+  would be an object key, a string, which rule 24 refuses); with expert mode, a `payload` or `cont` written as
+  a flat array of keys and values is read like the object for the Payload, Pact ID and Step items. The node
+  refuses such a document.
+- F-5 (gasLimit length), F-6 (SDK chain code not zeroised) unchanged: fail safe, or outside the app.
+- F-8: fuzzing is not in CI; the corpus replay above runs with the host tests.
+
 ## [2.0.0] — 2026-10-07
 
 The app is rewritten in Rust on Ledger's Rust SDK (`ledger_device_sdk` 1.41.0), with the NBGL

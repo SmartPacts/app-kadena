@@ -15,7 +15,7 @@ included.
 import socket
 import time
 
-from kadena import EXPECTED_PK, SIMPLE_TRANSFER, SW_OK, apdu, blake2b, modern_chunks, verify
+from kadena import EXPECTED_PK, SIMPLE_TRANSFER, STD, SW_OK, apdu, blake2b, le, modern_chunks, verify
 
 REFUSED = bytes.fromhex("6901")
 
@@ -89,6 +89,39 @@ def test_command_during_review_is_refused_and_the_review_signs_unchanged(kda):
     assert sent[:2] == [REFUSED, REFUSED], [r.hex() for r in sent]
     assert len(sent) == 3, [r.hex() for r in sent]
     assert sent[2] == clean + bytes.fromhex("9000")
+    # The lock ended with the review: the app answers again.
+    deadline = time.time() + 10
+    while kda.send(apdu(0x20))[0] != SW_OK:
+        assert time.time() < deadline
+        time.sleep(0.2)
+
+
+def test_command_during_address_review_is_refused_and_the_address_is_unchanged(kda):
+    """The same lock while an address waits for confirmation (GET_ADDR with P1 = 1):
+    a GET_ADDR and a signing command sent meanwhile get 0x6901, the address screen
+    does not change, and confirming it returns the key of the requested path."""
+    show = apdu(0x21, 1, 0, le(STD))
+    listener = ReplyListener(kda.backend._apdu_port)
+    try:
+        with kda.pending(show):
+            deadline = time.time() + 10
+            while not any("ddress" in t for t in kda.texts()):
+                assert time.time() < deadline, kda.texts()
+                time.sleep(0.1)
+            before = kda.texts()
+            assert rest_apdu(kda, apdu(0x21, 0, 0, le(STD))) == REFUSED
+            assert rest_apdu(kda, modern_chunks(0x22, SIMPLE_TRANSFER)[0]) == REFUSED
+            assert kda.texts() == before
+            kda.approve_address()
+        # The emulator handed the address request one of the refusals.
+        assert kda.result() == (0x6901, b"")
+        # As the device sent them: the two refusals, then the confirmed key.
+        sent = listener.replies(3, timeout=15)
+    finally:
+        listener.close()
+    assert sent[:2] == [REFUSED, REFUSED], [r.hex() for r in sent]
+    assert len(sent) == 3, [r.hex() for r in sent]
+    assert sent[2] == bytes.fromhex(EXPECTED_PK) + bytes.fromhex("9000")
     # The lock ended with the review: the app answers again.
     deadline = time.time() + 10
     while kda.send(apdu(0x20))[0] != SW_OK:

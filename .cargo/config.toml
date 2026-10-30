@@ -7,6 +7,9 @@ target = "apex_p"
 [profile.release]
 opt-level = 'z'
 lto = true
+# Integer overflow panics (the app's panic handler answers 0xE000 and exits)
+# instead of wrapping silently. Arithmetic meant to wrap says so (`wrapping_*`).
+overflow-checks = true
 # No build-directory paths in the binary (panic locations): the same source gives the same bytes
 # from any directory. Without this the Nano X build differed between CI and a local build.
 trim-paths = "all"

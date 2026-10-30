@@ -625,10 +625,6 @@ fn v16_non_principal_receiver_is_flagged() {
             transfer(&d, "1.0").replace(&format!("k:{}", other()), "k:bob"),
             true,
         ),
-        (
-            transfer(&d, "1.0").replace(&format!("\"k:{}\"", other()), "7"),
-            true,
-        ),
         (transfer(&d, "1.0"), false),
         (
             transfer(&d, "1.0").replace(&format!("k:{}", other()), "r:free.ks"),
@@ -636,6 +632,8 @@ fn v16_non_principal_receiver_is_flagged() {
         ),
         (xchain("bob"), true),
         (xchain(&format!("k:{}", other())), false),
+        // A receiver that is not a string (7, an object) is refused since 2.0.1:
+        // f1_shown_values_are_strings.
     ] {
         let json = with_signers(&format!(r#"[{{"pubKey":"{d}","clist":[{cap}]}}]"#));
         let (action, items) = run(&json, false, false);
@@ -1266,4 +1264,422 @@ fn v18_literal_duplicates_are_refused_in_nested_objects() {
         let (action, _) = run(&json, false, false);
         assert!(is_review(&action, false), "{data}");
     }
+}
+
+// ---- F-1, F-3, F-4 (v2.0.1) --------------------------------------------------------
+
+/// The cases among `cases` that are not refused with `text` on 0x22 (blind
+/// signing OFF and ON) and with a bare 0x6984 on 0x03, each with what happened
+/// instead (so a failure names every case that got through, not just the first).
+fn not_refused(cases: &[(&str, String)], text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, json) in cases {
+        for blind in [false, true] {
+            for legacy in [false, true] {
+                let want = if legacy {
+                    (vec![], 0x6984, false)
+                } else {
+                    (msg(text), 0x6984, false)
+                };
+                let got = match run(json, blind, legacy).0 {
+                    Action::Reply(r) => (r.payload().to_vec(), r.sw, false),
+                    Action::BlindSignRequired(r) => (r.payload().to_vec(), r.sw, true),
+                    other => {
+                        out.push(format!(
+                            "{name} (blind {blind}, legacy {legacy}): {other:?}"
+                        ));
+                        continue;
+                    }
+                };
+                if got != want {
+                    out.push(format!(
+                        "{name} (blind {blind}, legacy {legacy}): {:?} {:04x}",
+                        String::from_utf8_lossy(&got.0),
+                        got.1
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A cross-chain transfer capability from the device's account.
+fn xchain(to: &str, target: &str) -> String {
+    format!(
+        r#"{{"args":["k:{}","{to}",1.0,"{target}"],"name":"coin.TRANSFER_XCHAIN"}}"#,
+        dev()
+    )
+}
+
+/// F-1: a JSON escape inside a value the review shows as a transfer's From, To or
+/// To Chain, or as the Paying account, On Chain or On Network, is refused: the
+/// screen shows the raw text (`k:\u0030…`) while the node decodes it (`k:0…`).
+#[test]
+fn f1_escapes_in_shown_transfer_and_meta_values_are_refused() {
+    let d = dev();
+    let o = other();
+    let one = |cap: String| with_signers(&format!(r#"[{{"pubKey":"{d}","clist":[{cap}]}}]"#));
+    let plain_transfer = one(transfer(&d, "1.0"));
+    let plain_xchain = one(xchain(&format!("k:{o}"), "1"));
+    // The controls: the same transactions without the escapes are clear-signed.
+    for json in [&plain_transfer, &plain_xchain] {
+        let (action, _) = run(json, false, false);
+        assert!(is_review(&action, false), "{json}");
+    }
+    let esc_o = format!("k:\\u0061{}", &o[1..]);
+    let esc_d = format!("k:\\u0064{}", &d[1..]);
+    let cases = [
+        (
+            "transfer from",
+            plain_transfer.replacen(
+                &format!("\"k:{d}\",\"k:{o}\""),
+                &format!("\"{esc_d}\",\"k:{o}\""),
+                1,
+            ),
+        ),
+        (
+            "transfer to",
+            plain_transfer.replacen(&format!("\"k:{o}\",1.0"), &format!("\"{esc_o}\",1.0"), 1),
+        ),
+        (
+            "transfer to, short escape",
+            plain_transfer.replacen(&format!("\"k:{o}\",1.0"), "\"k:a\\/b\",1.0", 1),
+        ),
+        (
+            "xchain from",
+            plain_xchain.replacen(
+                &format!("\"k:{d}\",\"k:{o}\""),
+                &format!("\"{esc_d}\",\"k:{o}\""),
+                1,
+            ),
+        ),
+        ("xchain to", one(xchain(&esc_o, "1"))),
+        (
+            "xchain target chain",
+            one(xchain(&format!("k:{o}"), "\\u0031")),
+        ),
+        (
+            "meta.sender",
+            plain_transfer.replacen(r#""sender":"s""#, r#""sender":"\u0073""#, 1),
+        ),
+        (
+            "meta.chainId",
+            plain_transfer.replacen(r#""chainId":"0""#, r#""chainId":"\u0030""#, 1),
+        ),
+        (
+            "networkId",
+            plain_transfer.replacen(
+                r#""networkId":"mainnet01""#,
+                r#""networkId":"mainnet\u00301""#,
+                1,
+            ),
+        ),
+    ];
+    for (name, json) in &cases {
+        assert!(
+            json.contains('\\') && json != &plain_transfer && json != &plain_xchain,
+            "{name}"
+        );
+    }
+    let through = not_refused(&cases, "Unexpected characters");
+    assert!(through.is_empty(), "not refused:\n{}", through.join("\n"));
+    // Every other string is shown as before: an escape in the arguments of a
+    // capability the review cannot verify (blind signing), in the nonce, or in
+    // the code.
+    let debit = one(r#"{"args":["k:\u0061b",1.0],"name":"coin.DEBIT"}"#.to_string());
+    let (action, items) = run(&debit, true, false);
+    assert!(is_review(&action, true));
+    assert!(items
+        .iter()
+        .any(|(t, v)| t == "Arguments" && v.contains("k:\\u0061b")));
+    let nonce = plain_transfer.replacen(r#""nonce":"n""#, r#""nonce":"\u006e""#, 1);
+    let (action, _) = run(&nonce, false, false);
+    assert!(is_review(&action, false));
+}
+
+/// A transfer capability as a flat array of its keys and values.
+fn flat_transfer(from: &str) -> String {
+    format!(
+        r#"["args",["k:{from}","k:{}",1.0],"name","coin.TRANSFER"]"#,
+        other()
+    )
+}
+
+/// F-3: documents the node's decoder (aeson) rejects for their structure are
+/// refused, where the non-strict tokenizer reviewed them: the top-level value is
+/// not an object, a key is not a string, a comma is missing, a string holds a
+/// raw byte below 0x20. Also refused: a trailing or leading comma, a missing
+/// colon. Not covered (a known gap, see the CHANGELOG): a primitive that is not
+/// a JSON literal (`tru`, `01`), which the tokenizer still reads as a value.
+#[test]
+fn f3_non_strict_json_is_refused() {
+    let d = dev();
+    let signers = format!(
+        r#"[{{"pubKey":"{d}","clist":[{},{GAS}]}}]"#,
+        transfer(&d, "1.0")
+    );
+    let control = with_signers(&signers);
+    let (action, _) = run(&control, false, false);
+    assert!(is_review(&action, false));
+    // The command as an array of alternating keys and values: the old lookups
+    // read it like the object.
+    let payload = r#"{"exec":{"data":{},"code":"(x)"}}"#;
+    let as_array = format!(
+        r#"["networkId","mainnet01","payload",{payload},"signers",{signers},"meta",{META},"nonce","n"]"#
+    );
+    let cases = [
+        ("root array", as_array),
+        ("root string", r#""networkId""#.to_string()),
+        (
+            "unquoted key",
+            control.replacen(r#""nonce":"n""#, r#"nonce:"n""#, 1),
+        ),
+        (
+            "number key",
+            control.replacen(r#""data":{}"#, r#""data":{1:2}"#, 1),
+        ),
+        (
+            "object as key",
+            control.replacen(r#""data":{}"#, r#""data":{{}:2}"#, 1),
+        ),
+        (
+            "missing comma between members",
+            control.replacen(r#","nonce":"n""#, r#" "nonce":"n""#, 1),
+        ),
+        (
+            "missing comma after an object",
+            control.replacen(r#"},"nonce":"n""#, r#"}"nonce":"n""#, 1),
+        ),
+        (
+            "missing comma between elements",
+            control.replacen(&format!(",{GAS}"), &format!(" {GAS}"), 1),
+        ),
+        (
+            "missing comma between numbers",
+            control.replacen(r#""data":{}"#, r#""data":[1 2]"#, 1),
+        ),
+        (
+            "raw 0x01 in a string",
+            control.replacen(r#""nonce":"n""#, "\"nonce\":\"a\u{1}b\"", 1),
+        ),
+        (
+            "raw tab in a string",
+            control.replacen(r#""nonce":"n""#, "\"nonce\":\"a\tb\"", 1),
+        ),
+        (
+            "raw newline in a key",
+            control.replacen(r#""nonce":"n""#, "\"non\nce\":\"n\"", 1),
+        ),
+        (
+            "trailing comma in an object",
+            control.replacen(r#""data":{}"#, r#""data":{"a":1,}"#, 1),
+        ),
+        (
+            "trailing comma in an array",
+            control.replacen(r#""data":{}"#, r#""data":[1,]"#, 1),
+        ),
+        (
+            "leading comma",
+            control.replacen(r#""data":{}"#, r#""data":[,1]"#, 1),
+        ),
+        (
+            "missing colon",
+            control.replacen(r#""data":{}"#, r#""data" {}"#, 1),
+        ),
+        (
+            "colon in an array",
+            control.replacen(r#""data":{}"#, r#""data":[1:2]"#, 1),
+        ),
+        // A capability, or the clist, written as something other than an
+        // array of objects: the pairwise lookups read it like the object.
+        (
+            "capability as a flat array",
+            control.replacen(&transfer(&d, "1.0"), &flat_transfer(&d), 1),
+        ),
+        (
+            "clist as an object",
+            control.replacen(
+                &format!(r#""clist":[{},{GAS}]"#, transfer(&d, "1.0")),
+                &format!(r#""clist":{}"#, transfer(&d, "1.0")),
+                1,
+            ),
+        ),
+    ];
+    for (name, json) in &cases {
+        assert_ne!(json, &control, "{name}");
+    }
+    let through = not_refused(&cases, "Unexpected characters");
+    assert!(through.is_empty(), "not refused:\n{}", through.join("\n"));
+    // Valid JSON the tokenizer must keep accepting: empty containers, nesting,
+    // whitespace, escapes in values, bytes 0x7f and above in strings.
+    for data in [
+        r#"{"a":[],"b":{},"c":[[]],"d":[{}, {"e" : [1, -2.5e3, true, false, null]}]}"#,
+        "{\"a\":\"\u{7f}\u{e9}\\t\\n\\u0000\"}",
+        "[ 1 ,\t2 ,\r\n3 ]",
+    ] {
+        let json = control.replacen(r#""data":{}"#, &format!(r#""data":{data}"#), 1);
+        let (action, _) = run(&json, false, false);
+        assert!(is_review(&action, false), "{data}");
+    }
+}
+
+/// Review of 2.0.1, item 3: every value the review shows as text from a JSON
+/// string (From, To, To Chain, Paying account, On Chain, On Network) must be a
+/// JSON string.
+#[test]
+fn f1_shown_values_are_strings() {
+    let d = dev();
+    let o = other();
+    let one = |cap: String| with_signers(&format!(r#"[{{"pubKey":"{d}","clist":[{cap}]}}]"#));
+    let plain_transfer = one(transfer(&d, "1.0"));
+    let plain_xchain = one(xchain(&format!("k:{o}"), "1"));
+    let cases = [
+        (
+            "From a number",
+            plain_transfer.replacen(&format!("\"k:{d}\",\"k:{o}\""), &format!("1,\"k:{o}\""), 1),
+        ),
+        (
+            "To an object",
+            plain_transfer.replacen(&format!("\"k:{o}\",1.0"), r#"{"a":"b"},1.0"#, 1),
+        ),
+        (
+            "To Chain a number",
+            plain_xchain.replacen(r#",1.0,"1"]"#, ",1.0,1]", 1),
+        ),
+        (
+            "Paying account a number",
+            plain_transfer.replacen(r#""sender":"s""#, r#""sender":5"#, 1),
+        ),
+        (
+            "On Chain a number",
+            plain_transfer.replacen(r#""chainId":"0""#, r#""chainId":0"#, 1),
+        ),
+        (
+            "On Network an object",
+            plain_transfer.replacen(r#""networkId":"mainnet01""#, r#""networkId":{"a":"b"}"#, 1),
+        ),
+    ];
+    for (name, json) in &cases {
+        assert!(json != &plain_transfer && json != &plain_xchain, "{name}");
+    }
+    let through = not_refused(&cases, "Unexpected characters");
+    assert!(through.is_empty(), "not refused:\n{}", through.join("\n"));
+}
+
+/// Review of 2.0.1, item 4: expert mode shows a continuation's Pact ID and Step;
+/// neither may hold an escape, and the Pact ID must be a string.
+#[test]
+fn f1_expert_pact_id_and_step_are_unescaped() {
+    let d = dev();
+    let plain_transfer = with_signers(&format!(
+        r#"[{{"pubKey":"{d}","clist":[{}]}}]"#,
+        transfer(&d, "1.0")
+    ));
+    let cont = |pact_id: &str, step: &str| {
+        plain_transfer.replacen(
+            r#""payload":{"exec":{"data":{},"code":"#,
+            &format!(r#""payload":{{"cont":{{"pactId":{pact_id},"step":{step},"rollback":false,"data":{{}},"proof":null}},"x":{{"code":"#),
+            1,
+        )
+    };
+    let control = cont(r#""abc""#, "1");
+    let (action, items) = run_expert(&control);
+    assert!(is_review(&action, false), "{action:?}");
+    assert_eq!(value(&items, "Pact ID"), "abc");
+    assert_eq!(value(&items, "Step"), "1");
+    let mut through = Vec::new();
+    for (name, json) in [
+        ("Pact ID escaped", cont(r#""\u0061bc""#, "1")),
+        ("Pact ID a number", cont("7", "1")),
+        ("Step escaped", cont(r#""abc""#, r#"\u0031"#)),
+        ("Step an object", cont(r#""abc""#, r#"{"a":"b"}"#)),
+        ("Step a string", cont(r#""abc""#, r#""1""#)),
+        ("Step a fraction", cont(r#""abc""#, "1.5")),
+        ("Step negative", cont(r#""abc""#, "-1")),
+    ] {
+        match run_expert(&json).0 {
+            Action::Reply(r) if r.payload() == b"Unexpected characters" && r.sw == 0x6984 => {}
+            other => through.push(format!("{name}: {other:?}")),
+        }
+        // Not shown with expert mode OFF: reviewed as before.
+        assert!(is_review(&run(&json, false, false).0, false), "{name}");
+    }
+    assert!(through.is_empty(), "not refused:\n{}", through.join("\n"));
+}
+
+/// Sends `json` with 0x22 with the expert setting ON (blind signing OFF).
+fn run_expert(json: &str) -> (Action, Vec<(String, String)>) {
+    let mut app = new_app();
+    let mut p = Mock {
+        expert: true,
+        auto_signer: false,
+        ..Default::default()
+    };
+    let r = exchange(
+        &mut app,
+        &mut p,
+        &apdu(0, 0x22, 0, 0, &path_bytes(&STD_PATH)),
+        false,
+    );
+    assert_eq!(r.sw, 0x9000);
+    let chunks: Vec<&[u8]> = json.as_bytes().chunks(250).collect();
+    for c in &chunks[..chunks.len() - 1] {
+        assert_eq!(
+            exchange(&mut app, &mut p, &apdu(0, 0x22, 1, 0, c), false).sw,
+            0x9000
+        );
+    }
+    let action = app.handle(&mut p, 0, 0x22, 2, 0, chunks[chunks.len() - 1]);
+    let items = match action {
+        Action::ReviewTx { .. } => review_items(&app, &p),
+        _ => Vec::new(),
+    };
+    (action, items)
+}
+
+/// F-4: pact-5 requires `meta.sender` (the account that pays the fee); a `meta`
+/// object without it is refused with "Invalid meta field". A `null` meta keeps
+/// the CAUTION (blind signing, V11).
+#[test]
+fn f4_meta_without_sender_is_refused() {
+    let d = dev();
+    let control = with_signers(&format!(
+        r#"[{{"pubKey":"{d}","clist":[{}]}}]"#,
+        transfer(&d, "1.0")
+    ));
+    let (action, items) = run(&control, false, false);
+    assert!(is_review(&action, false));
+    assert_eq!(value(&items, "Paying account"), "s");
+    let no_sender = control.replacen(r#","sender":"s""#, "", 1);
+    let sender_first = control.replacen(
+        r#"{"creationTime":0,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s"}"#,
+        r#"{"gasPrice":1.0e-6,"chainId":"0","gasLimit":600,"ttl":28800,"creationTime":0}"#,
+        1,
+    );
+    let extra_key = control.replacen(r#""sender":"s""#, r#""payer":"s""#, 1);
+    let empty_meta = control.replacen(META, "{}", 1);
+    // A `meta` that is not an object is refused too (the pairwise lookups read
+    // a flat array of keys and values like the object).
+    let five = r#"["creationTime",0,"ttl",28800,"gasLimit",600,"chainId","0","gasPrice",1.0e-6]"#;
+    let six = r#"["creationTime",0,"ttl",28800,"gasLimit",600,"chainId","0","gasPrice",1.0e-6,"sender","s"]"#;
+    let cases = [
+        ("five keys", no_sender),
+        ("five keys, any order", sender_first),
+        ("another key instead", extra_key),
+        ("empty meta", empty_meta),
+        ("flat array, five keys", control.replacen(META, five, 1)),
+        ("flat array, six keys", control.replacen(META, six, 1)),
+        ("a string", control.replacen(META, r#""s""#, 1)),
+        ("a number", control.replacen(META, "1", 1)),
+        (
+            "the string \"null\"",
+            control.replacen(META, r#""null""#, 1),
+        ),
+    ];
+    for (name, json) in &cases {
+        assert_ne!(json, &control, "{name}");
+    }
+    let through = not_refused(&cases, "Invalid meta field");
+    assert!(through.is_empty(), "not refused:\n{}", through.join("\n"));
 }

@@ -2,22 +2,22 @@
 //!
 //! One `repr(C)` struct fixes the layout: the settings come first. Their initial
 //! content is not all zero (the SDK's `AtomicStorage` carries validity flags), and
-//! Speculos only loads the start of a Rust app's `.nvm_data` from the ELF; the two
-//! transaction buffers start as zeros and are only ever written at run time.
+//! Speculos only loads the start of a Rust app's `.nvm_data` from the ELF; the
+//! transaction buffer starts as zeros and is only ever written at run time. (The
+//! structured-transfer template is kept in RAM since 2.0.1, F-2: see `platform`.)
 //!
 //! Aliasing: one raw pointer to the store is taken, once, from the only
 //! reference ever made to the whole store; every access is a place projection
 //! from it. The settings go to the NBGL settings page as a borrow that ends with
 //! the call (the SDK keeps a raw pointer), and the app reads them through the same
-//! raw pointer, never while the settings page runs. The transaction buffers live
-//! in `UnsafeCell`s: the OS flash write goes through the cell's own pointer.
-//! Callers read them only through `platform::Device`, whose `&self` reads and
+//! raw pointer, never while the settings page runs. The transaction buffer lives
+//! in an `UnsafeCell`: the OS flash write goes through the cell's own pointer.
+//! Callers read it only through `platform::Device`, whose `&self` reads and
 //! `&mut self` writes keep every slice from outliving a write.
 
 use core::cell::{Cell, UnsafeCell};
 use core::ffi::c_void;
 
-use kadena_core::transfer::TEMPLATE_BUF;
 use ledger_device_sdk::nbgl::SETTINGS_SIZE;
 use ledger_device_sdk::nvm::AtomicStorage;
 use ledger_device_sdk::sys;
@@ -65,8 +65,6 @@ impl<const N: usize> FlashBuf<N> {
 pub struct Store {
     /// Setting switches; all OFF on install.
     settings: AtomicStorage<[u8; SETTINGS_SIZE]>,
-    /// Structured-transfer template (C: `N_appdata.templete_json`).
-    template: FlashBuf<TEMPLATE_BUF>,
     /// Raw transaction bytes (C: `N_appdata.buffer`).
     tx: FlashBuf<TX_CAP>,
 }
@@ -74,7 +72,6 @@ pub struct Store {
 #[link_section = ".nvm_data"]
 static mut STORE: NVMData<Store> = NVMData::new(Store {
     settings: AtomicStorage::new(&[0u8; SETTINGS_SIZE]),
-    template: FlashBuf::zeroed(),
     tx: FlashBuf::zeroed(),
 });
 
@@ -114,25 +111,11 @@ fn tx_buf() -> &'static FlashBuf<TX_CAP> {
     unsafe { &(*base()).tx }
 }
 
-fn template_buf() -> &'static FlashBuf<TEMPLATE_BUF> {
-    // SAFETY: as for `tx_buf`.
-    unsafe { &(*base()).template }
-}
-
 pub fn tx() -> &'static [u8; TX_CAP] {
     tx_buf().get()
-}
-
-pub fn template() -> &'static [u8; TEMPLATE_BUF] {
-    template_buf().get()
 }
 
 /// Writes `data` at `offset` of the transaction buffer.
 pub fn tx_write(offset: usize, data: &[u8]) {
     tx_buf().write(offset, data);
-}
-
-/// Replaces the start of the template buffer with `data` (at most its size).
-pub fn template_write(data: &[u8]) {
-    template_buf().write(0, data);
 }

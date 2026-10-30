@@ -34,10 +34,16 @@ What changes is listed plainly under [Differences from the C implementation](#di
 
 *Once the app is approved by Ledger, it will be available in their app store (Ledger Live).*
 
-Kadena is currently not offered in Ledger's catalog. Released versions up to v1.3.3 are the
-C implementation; see the [release page](https://github.com/SmartPacts/app-kadena/releases) and the notes
-there for sideloading on a Nano S+. A retail Nano X refuses sideloaded apps. The
-first-generation Nano S is not supported.
+Kadena is currently not offered in Ledger's catalog. The [release page](https://github.com/SmartPacts/app-kadena/releases)
+carries the Rust app (2.0.x, one file per device and OS API level, with `INSTALL.md`) and the C app
+(1.3.x), both for sideloading on a Nano S Plus or a Nano Gen5. A retail Nano X refuses sideloaded apps.
+The first-generation Nano S is not supported.
+
+**Verify a download before installing it.** Each release lists two kinds of hash: the sha256 of every
+downloadable file (`sha256sum -c` over the file lines), and the application hash the device shows after
+installation (on the install screen of a Nano S Plus; behind the "i" on a Nano Gen5). Compare both; the
+device hash is also printed by the loader. From 2.0.1 on, the file digests are in `SHA256SUMS.txt` alone
+and the device hashes in `APP-HASHES.txt`, so `sha256sum -c SHA256SUMS.txt` passes as is.
 
 ## Security model
 
@@ -60,13 +66,15 @@ first-generation Nano S is not supported.
   TRANSFER capability is in scope. Structured coin transfers are never blind.
 - **Fee, payer and other warnings.** Every review shows the maximum fee in KDA and the paying account. A transfer
   to an account that is not a principal is flagged.
+- **Reporting.** Security problems go to the private vulnerability report form of this repository or to
+  contact@smartpacts.io; see [SECURITY.md](SECURITY.md).
 - **Memory safety.** The protocol code (`kadena-core`) contains no unsafe code and no heap allocation;
   every buffer access is bounds-checked. The device crate uses `unsafe` only for OS calls (flash writes,
   PIN state, versions) and for the single-threaded statics that hold the app state and the flash store.
 
 ## Differences from the C implementation
 
-Intended differences from v1.3.0 (details in [docs/APDUSPEC.md](docs/APDUSPEC.md#differences-from-the-c-implementation-v130)):
+Intended differences from v1.3.0 (details in [docs/apdu.md](docs/apdu.md#differences-from-the-c-implementation-v130)):
 
 1. Legacy transfer (0x10): an item longer than the bytes its APDU carries is refused (0x6700). The C app could
    sign leftover bytes as the undisplayed ttl.
@@ -234,4 +242,4 @@ assertions, as on the device.
 
 ## APDU Specifications
 
-- [APDU Protocol](docs/APDUSPEC.md)
+- [APDU Protocol](docs/apdu.md)

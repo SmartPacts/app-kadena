@@ -1,6 +1,6 @@
 //! The device side of `kadena_core::app::Platform`: key derivation, signing,
 //! hashing (all through the OS), the transaction buffer (RAM, then flash for large
-//! transactions, as in the C app), the transfer template (flash), settings.
+//! transactions, as in the C app), the transfer template (RAM), settings.
 
 use core::cell::UnsafeCell;
 
@@ -22,6 +22,18 @@ struct RamBuffer(UnsafeCell<[u8; RAM_CAP]>);
 unsafe impl Sync for RamBuffer {}
 
 static RAM: RamBuffer = RamBuffer(UnsafeCell::new([0; RAM_CAP]));
+
+/// F-2: where the structured-transfer template lives, the last `TEMPLATE_BUF`
+/// bytes of the RAM buffer (no flash write per transfer; the C app wrote it to
+/// flash). The transfer body it is built from is at the start of the same buffer
+/// and cannot reach it: `transfer::build` accepts only a body it reads to the end,
+/// a type byte and 12 fields of at most 255 bytes each, so at most 3073 bytes,
+/// and the body is never read again once the template is built.
+const TEMPLATE_AT: usize = RAM_CAP - TEMPLATE_BUF;
+/// The longest body `transfer::build` accepts: the type byte, then 12 fields,
+/// each a length byte and at most 255 bytes.
+const MAX_TRANSFER_BODY: usize = 1 + 12 * (1 + 255);
+const _: () = assert!(MAX_TRANSFER_BODY <= TEMPLATE_AT);
 
 /// Flash writes of the transaction buffer.
 struct TxFlash;
@@ -154,11 +166,11 @@ impl Platform for Device {
 
     fn template_store(&mut self, data: &[u8]) {
         let len = data.len().min(TEMPLATE_BUF);
-        storage::template_write(&data[..len]);
+        self.ram[TEMPLATE_AT..TEMPLATE_AT + len].copy_from_slice(&data[..len]);
         self.template_len = len;
     }
 
     fn template(&self) -> &[u8] {
-        &storage::template()[..self.template_len]
+        &self.ram[TEMPLATE_AT..TEMPLATE_AT + self.template_len]
     }
 }

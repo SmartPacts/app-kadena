@@ -4,7 +4,7 @@
 //! `app/src/apdu_handler_legacy.c` (legacy family 0x00-0x04, 0x10),
 //! `common/actions.h` (replies) and `crypto.c` (what is signed). Every status word
 //! and response byte matches the C app, except the intended divergences recorded
-//! in `docs/APDUSPEC.md` (numbered list):
+//! in `docs/apdu.md` (numbered list):
 //!
 //! * V1 legacy 0x10: an item whose length byte points past the received bytes is
 //!   refused with 0x6700 (C read stale buffer bytes there);

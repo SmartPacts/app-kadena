@@ -6,9 +6,23 @@ devices (Nano S+, Nano X, Stax, Flex, Apex P). This document describes v2.0.0 on
 
 ## Scope and method
 
-Commit ids below refer to the development history, which is not part of this repository. In the tests,
+Commit ids below are checkpoints of the maintainers' development history, which was not published (this
+repository starts from the first public tree). The table maps each checkpoint to the review that looked at it
+and to the public tree where one exists; the full history is available to an auditor on request. In the tests,
 "R3" (with F-A, F-B, #3 to #5) names the emulator reproduction of the C app's defects behind V1 to V4, and
 "PoC P1/P2" the first review's two inputs for F1 and F2.
+
+| Checkpoint | What it is | Public equivalent |
+|---|---|---|
+| `b88f6d8` | first whole-app review (2026-09-28) | none (port in progress) |
+| `39a91bc` | second review (2026-09-29) | none |
+| `53e98c4` | third review (2026-09-30) | none |
+| `ea87504` | fourth review (2026-09-30) | none |
+| `702e207` | fifth review (2026-10-01) | none |
+| `575868d` | review of the first hardware run's changes (2026-10-02) | none |
+| `eeb52e3`, `33750a1` | seventh and eighth reviews; `33750a1` = release candidate 1 (2026-10-03) | first public tree (2026-10-04) |
+| rc2 (`64691dd`) | V27 meta by key set, SDK 1.38.0, logo (2026-10-05) | public `main` 9ead3ae |
+| rc3 (`bbe78a8`) | SDK 1.41.0, trim-paths, settings init; tenth review | public `main` 58bf3b3; released as v2.0.0 (a54723e) |
 
 - **Static reviews** (the maintainer's own, each by a reviewer with no part in writing the code; not a third-party audit): five reviews of the whole app, at `b88f6d8`, `39a91bc`, `53e98c4`, `ea87504` and `702e207` (every line
   of `src/` and `kadena-core/src/`, the build files and this folder), against Ledger's security-review
@@ -236,7 +250,7 @@ devices at both levels.
 
 The other intended differences from v1.3.0 (V1-V8: legacy 0x10 bounds, the transfer allowlist, the exact
 signer match of the "Unscoped Signer" warning, duplicate JSON keys, stream rules, the path bound to the signing
-command) are listed in `docs/APDUSPEC.md`.
+command) are listed in `docs/apdu.md`.
 
 ## What was verified, and how
 

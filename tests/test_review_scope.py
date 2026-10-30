@@ -211,16 +211,81 @@ def test_v27_kadena_client_coin_transfer_clear_signs(kda):
     verify(EXPECTED_PK, blake2b(tx), sig)
 
 
-@pytest.mark.parametrize(
-    "meta",
-    [PERMUTED_META[:-1] + ',"payer":"x"}', PERMUTED_META.replace('"sender"', '"payer"')],
-    ids=["unknown-seventh-key", "unknown-key-for-sender"],
-)
-def test_v27_unknown_meta_key_still_needs_blind_signing(kda, meta):
+def test_v27_unknown_meta_key_still_needs_blind_signing(kda):
+    meta = PERMUTED_META[:-1] + ',"payer":"x"}'
     tx = command("[" + entry(EXPECTED_PK, "[" + transfer_cap("k:" + EXPECTED_PK) + "]") + "]", meta=meta)
     with kda.pending(send_last(kda, tx)):
         kda.dismiss_blind_signing_required()
     assert kda.result() == (0x6984, BLIND_REQUIRED)
+
+
+# ---- 2.0.1: F-1, F-3, F-4 (apdu.md rule 29, 28, 30) -----------------------------------
+# Refused before any screen, with the text and 0x6984; the host tests
+# (kadena-core/tests/review_scope.rs) hold the controls and every variant.
+
+OWN = "[" + entry(EXPECTED_PK, "[" + transfer_cap("k:" + EXPECTED_PK) + "]") + "]"
+PLAIN = command(OWN)
+# A meta, and a transfer capability, written as flat arrays of their keys and values.
+FLAT_META = '["creationTime",0,"ttl",28800,"gasLimit",600,"chainId","0","gasPrice",1.0e-6,"sender","k:' + EXPECTED_PK + '"]'
+FLAT_CAP = '["args",["k:' + EXPECTED_PK + '","k:' + OTHER + '",1.0],"name","coin.TRANSFER"]'
+REFUSALS = [
+    # F-1: an escape in a value the review shows.
+    (
+        "f1-receiver",
+        command("[" + entry(EXPECTED_PK, "[" + transfer_cap("k:" + EXPECTED_PK, "k:\\u0061" + OTHER[1:]) + "]") + "]"),
+        "Unexpected characters",
+    ),
+    ("f1-sender", PLAIN.replace(b'"sender":"k:', b'"sender":"\\u006b:', 1), "Unexpected characters"),
+    ("f1-network", PLAIN.replace(b'"mainnet01"', b'"mainnet\\u00301"', 1), "Unexpected characters"),
+    # F-3: not strict JSON.
+    ("f3-top-level-array", b"[" + PLAIN + b"]", "Unexpected characters"),
+    ("f3-unquoted-key", PLAIN.replace(b'"nonce":', b"nonce:", 1), "Unexpected characters"),
+    ("f3-missing-comma", PLAIN.replace(b',"nonce":', b' "nonce":', 1), "Unexpected characters"),
+    ("f3-raw-control-byte", PLAIN.replace(b'"nonce":"n"', b'"nonce":"a\x01b"', 1), "Unexpected characters"),
+    # F-4: meta without sender.
+    ("f4-no-sender", command(OWN, meta=META.replace(',"sender":"k:' + EXPECTED_PK + '"', "")), "Invalid meta field"),
+    ("f4-other-key-for-sender", command(OWN, meta=PERMUTED_META.replace('"sender"', '"payer"')), "Invalid meta field"),
+    # Review of 2.0.1. 1: a meta that is not an object (a flat array of its keys and values).
+    ("f4-meta-flat-array", command(OWN, meta=FLAT_META), "Invalid meta field"),
+    ("f4-meta-string-null", command(OWN, meta='"null"'), "Invalid meta field"),
+    # 2: a capability written as a flat array of its keys and values.
+    ("f3-capability-flat-array", command("[" + entry(EXPECTED_PK, "[" + FLAT_CAP + "]") + "]"), "Unexpected characters"),
+    # 3: a shown value that is not a string.
+    ("f1-network-object", PLAIN.replace(b'"mainnet01"', b'{"a":"b"}', 1), "Unexpected characters"),
+    ("f1-chain-number", PLAIN.replace(b'"chainId":"0"', b'"chainId":0', 1), "Unexpected characters"),
+    ("f1-sender-number", PLAIN.replace(b'"sender":"k:' + EXPECTED_PK.encode() + b'"', b'"sender":5', 1), "Unexpected characters"),
+    (
+        "f1-receiver-number",
+        command("[" + entry(EXPECTED_PK, "[" + transfer_cap("k:" + EXPECTED_PK).replace('"k:' + OTHER + '"', "7") + "]") + "]"),
+        "Unexpected characters",
+    ),
+]
+
+
+@pytest.mark.parametrize("tx, message", [r[1:] for r in REFUSALS], ids=[r[0] for r in REFUSALS])
+def test_v201_refusals(kda, tx, message):
+    assert tx != PLAIN
+    assert kda.send(send_last(kda, tx)) == (0x6984, err(message))
+
+
+def cont_command(pact_id, step):
+    """PLAIN with a continuation payload (expert mode shows its Pact ID and Step)."""
+    cont = '{"cont":{"pactId":' + pact_id + ',"step":' + step + ',"rollback":false,"data":{},"proof":null}}'
+    return PLAIN.replace(b'{"exec":{"data":{},"code":"(coin.transfer)"}}', cont.encode(), 1)
+
+
+# Review of 2.0.1, 4: with expert mode, an escape in the Pact ID or the Step, or a
+# Pact ID that is not a string, is refused.
+@pytest.mark.parametrize(
+    "pact_id, step",
+    [('"\\u0061bc"', "1"), ("7", "1"), ('"abc"', "\\u0031"), ('"abc"', '{"a":"b"}')],
+    ids=["pact-id-escaped", "pact-id-number", "step-escaped", "step-object"],
+)
+def test_v201_expert_continuation_refusals(kda, pact_id, step):
+    tx = cont_command(pact_id, step)
+    assert tx != PLAIN
+    kda.toggle_settings("Expert mode")
+    assert kda.send(send_last(kda, tx)) == (0x6984, err("Unexpected characters"))
 
 
 # ---- V12 -------------------------------------------------------------------------

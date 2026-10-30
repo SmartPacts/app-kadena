@@ -7,9 +7,13 @@ screens, and compare the screens with the snapshots in `snapshots/<device>/<test
 - `conftest.py` — Ragger's fixtures (`--device`, `--golden_run`) and the `kda` fixture.
 - `kadena.py` — APDU encoding, the test vectors, signature checks and screen navigation.
 - `test_*.py` — the tests, one file per area; `test_review_scope.py` holds the security rules (V9-V26 of
-  `docs/APDUSPEC.md`), each refusal checked with its status word and message.
+  `docs/apdu.md`), each refusal checked with its status word and message.
 
 ## Run locally
+
+The host tests of `kadena-core` are not here; run them from outside the repository, as CI does (inside it the root
+`.cargo/config.toml` builds for a device and `cargo test` fails): `cd /tmp && cargo +nightly-2025-12-05 test --locked
+--manifest-path <repository>/kadena-core/Cargo.toml`.
 
 Build the app first (`cargo ledger build <device>` in the repository root, see the top-level README). The
 snapshots in this folder were produced in Ledger's dev-tools image pinned by digest in the top-level README:

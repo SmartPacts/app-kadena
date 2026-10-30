@@ -1,7 +1,9 @@
 name: Rust checks
 
 # Formatting, clippy (no warnings) on every device target, and the host test
-# suite of the protocol crate, all in the pinned dev-tools image.
+# suite of the protocol crate, all in the pinned dev-tools image; then
+# cargo-audit over both lock files and a short libFuzzer run of the review
+# target, on the default runner.
 
 on:
   workflow_dispatch:
@@ -18,7 +20,8 @@ jobs:
     container:
       image: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:1f93ba59ee02576f336653c712276f006d4d81f4e355b023489bb7b5bdcf390d
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4 (tag resolved 2026-10-13)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Format
         run: |
           cargo fmt --check
@@ -35,6 +38,39 @@ jobs:
           cd /tmp
           cargo +nightly-2025-12-05 test --manifest-path "$GITHUB_WORKSPACE/kadena-core/Cargo.toml"
           cargo +nightly-2025-12-05 clippy --all-targets --manifest-path "$GITHUB_WORKSPACE/kadena-core/Cargo.toml" -- -D warnings
+
+  audit:
+    name: cargo-audit (app and protocol crate lock files)
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4 (tag resolved 2026-10-13)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit the app lock file
+        run: cargo audit --file Cargo.lock
+      - name: Audit the protocol crate lock file
+        run: cargo audit --file kadena-core/Cargo.lock
+
+  fuzz:
+    name: libFuzzer, review target (seed corpus, then a short run)
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4 (tag resolved 2026-10-13)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Toolchain
+        run: rustup toolchain install nightly-2025-12-05 --profile minimal --component rust-src
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Replay the seed corpus, then fuzz for two minutes
+        # From outside the app directory, so the device build settings in
+        # .cargo/config.toml do not apply (README, "Fuzzing").
+        run: |
+          mkdir -p /tmp/fuzz-corpus
+          cd /tmp
+          cargo +nightly-2025-12-05 fuzz run --fuzz-dir "$GITHUB_WORKSPACE/kadena-core/fuzz" review \
+            /tmp/fuzz-corpus "$GITHUB_WORKSPACE/kadena-core/fuzz/seeds/review" \
+            -- -max_len=15104 -max_total_time=120
 
   lint:
     name: Ledger lint

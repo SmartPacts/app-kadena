@@ -6,6 +6,15 @@
 //! same as the C code's, because every later lookup (and therefore what the
 //! device shows) is defined in terms of token indices.
 //!
+//! [`parse_strict`] is the tokenizer the app uses (F-3): the same scan and the
+//! same tokens, plus the JSON grammar rules non-strict jsmn skips, so that a
+//! document the node's decoder (aeson) rejects for its structure is refused too:
+//! the top-level value must be an object, every object key a string, members
+//! and elements separated by exactly one comma (none trailing), a key followed
+//! by a colon, and no raw byte below 0x20 inside a string. [`parse`] keeps the
+//! C behaviour for the C test vectors. Everything after the top-level object is
+//! left to the caller, which refuses it (V12).
+//!
 //! The one place where the C code reads outside its token array is reproduced by
 //! value, not by memory access: a `,` seen while the "superior" token index is -1
 //! reads `tokens[-1].type`. In the C app that memory is the zeroed header of
@@ -119,12 +128,22 @@ fn is_hex(c: u8) -> bool {
 }
 
 /// `jsmn_parse_string` (jsmn.c:109-177).
-fn parse_string(p: &mut Parser, js: &[u8], tokens: &mut [Token]) -> Result<(), JsmnError> {
+/// With `strict` (F-3), a raw byte below 0x20 inside the string is invalid, as in JSON.
+fn parse_string(
+    p: &mut Parser,
+    js: &[u8],
+    tokens: &mut [Token],
+    strict: bool,
+) -> Result<(), JsmnError> {
     let start = p.pos;
     // Skip starting quote
     p.pos += 1;
     while p.pos < js.len() && js[p.pos] != 0 {
         let c = js[p.pos];
+        if strict && c < 0x20 {
+            p.pos = start;
+            return Err(JsmnError::Inval);
+        }
         if c == b'"' {
             let Some(idx) = alloc_token(p, tokens) else {
                 p.pos = start;
@@ -166,10 +185,48 @@ fn parse_string(p: &mut Parser, js: &[u8], tokens: &mut [Token]) -> Result<(), J
     Err(JsmnError::Part)
 }
 
+/// F-3: what the strict tokenizer accepts next.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    /// The top-level value, which must be an object.
+    Root,
+    /// A value: after `:`, or after `,` in an array.
+    Value,
+    /// A value or `]`: after `[`.
+    ValueOrClose,
+    /// A key (a string): after `,` in an object.
+    Key,
+    /// A key or `}`: after `{`.
+    KeyOrClose,
+    /// `:` after a key.
+    Colon,
+    /// `,` or the container's closing bracket, after a value.
+    CommaOrClose,
+    /// The top-level object is closed; the rest is the caller's (V12).
+    Done,
+}
+
 /// `jsmn_parse` (jsmn.c:182-355, non-strict, no parent links), starting from a
 /// freshly initialised parser. Returns the number of tokens written to `tokens`.
 /// Tokenizing stops at the first NUL byte, as in C.
 pub fn parse(js: &[u8], tokens: &mut [Token]) -> Result<usize, JsmnError> {
+    parse_impl(js, tokens, false)
+}
+
+/// [`parse`] with the JSON grammar rules of F-3 (module docs): a document that
+/// breaks one is `Inval`. A document both accept gives the same tokens.
+pub fn parse_strict(js: &[u8], tokens: &mut [Token]) -> Result<usize, JsmnError> {
+    parse_impl(js, tokens, true)
+}
+
+/// The innermost open object or array, if any (after the `,` handling below
+/// has pointed `toksuper` at it).
+fn open_container(p: &Parser, tokens: &[Token]) -> Option<TokType> {
+    let t = tokens.get(usize::try_from(p.toksuper).ok()?)?;
+    (is_open(t) && matches!(t.kind, TokType::Array | TokType::Object)).then_some(t.kind)
+}
+
+fn parse_impl(js: &[u8], tokens: &mut [Token], strict: bool) -> Result<usize, JsmnError> {
     for t in tokens.iter_mut() {
         *t = Token::EMPTY;
     }
@@ -179,11 +236,23 @@ pub fn parse(js: &[u8], tokens: &mut [Token]) -> Result<usize, JsmnError> {
         toksuper: -1,
     };
     let mut count: usize = 0;
+    let mut expect = Expect::Root;
 
     while p.pos < js.len() && js[p.pos] != 0 {
         let c = js[p.pos];
+        // F-3: the grammar is checked up to the end of the top-level object.
+        let check = strict && expect != Expect::Done;
         match c {
             b'{' | b'[' => {
+                if check {
+                    expect = match (expect, c) {
+                        (Expect::Root | Expect::Value | Expect::ValueOrClose, b'{') => {
+                            Expect::KeyOrClose
+                        }
+                        (Expect::Value | Expect::ValueOrClose, _) => Expect::ValueOrClose,
+                        _ => return Err(JsmnError::Inval),
+                    };
+                }
                 count += 1;
                 let Some(idx) = alloc_token(&mut p, tokens) else {
                     return Err(JsmnError::NoMem);
@@ -197,6 +266,15 @@ pub fn parse(js: &[u8], tokens: &mut [Token]) -> Result<usize, JsmnError> {
                 p.toksuper = p.toknext as i32 - 1;
             }
             b'}' | b']' => {
+                if check
+                    && !matches!(
+                        (expect, c),
+                        (Expect::CommaOrClose | Expect::KeyOrClose, b'}')
+                            | (Expect::CommaOrClose | Expect::ValueOrClose, b']')
+                    )
+                {
+                    return Err(JsmnError::Inval);
+                }
                 let kind = if c == b'}' {
                     TokType::Object
                 } else {
@@ -226,16 +304,40 @@ pub fn parse(js: &[u8], tokens: &mut [Token]) -> Result<usize, JsmnError> {
                     }
                     i -= 1;
                 }
+                if check {
+                    // `toksuper` is now the enclosing open container, or -1.
+                    expect = if p.toksuper >= 0 {
+                        Expect::CommaOrClose
+                    } else {
+                        Expect::Done
+                    };
+                }
             }
             b'"' => {
-                parse_string(&mut p, js, tokens)?;
+                if check {
+                    expect = match expect {
+                        Expect::Key | Expect::KeyOrClose => Expect::Colon,
+                        Expect::Value | Expect::ValueOrClose => Expect::CommaOrClose,
+                        _ => return Err(JsmnError::Inval),
+                    };
+                }
+                parse_string(&mut p, js, tokens, check)?;
                 count += 1;
             }
             b'\t' | b'\r' | b'\n' | b' ' => {}
             b':' => {
+                if check {
+                    if expect != Expect::Colon {
+                        return Err(JsmnError::Inval);
+                    }
+                    expect = Expect::Value;
+                }
                 p.toksuper = p.toknext as i32 - 1;
             }
             b',' => {
+                if check && expect != Expect::CommaOrClose {
+                    return Err(JsmnError::Inval);
+                }
                 // C: `toksuper != 0xFFFF` is always true for an int holding -1..767,
                 // and `tokens[-1].type` is the zeroed struct header (see module docs).
                 let sup_kind = if p.toksuper >= 0 {
@@ -254,8 +356,22 @@ pub fn parse(js: &[u8], tokens: &mut [Token]) -> Result<usize, JsmnError> {
                         i -= 1;
                     }
                 }
+                if check {
+                    expect = match open_container(&p, tokens) {
+                        Some(TokType::Object) => Expect::Key,
+                        Some(_) => Expect::Value,
+                        None => return Err(JsmnError::Inval),
+                    };
+                }
             }
             _ => {
+                if check {
+                    // A primitive is a value, never a key.
+                    expect = match expect {
+                        Expect::Value | Expect::ValueOrClose => Expect::CommaOrClose,
+                        _ => return Err(JsmnError::Inval),
+                    };
+                }
                 parse_primitive(&mut p, js, tokens)?;
                 count += 1;
             }

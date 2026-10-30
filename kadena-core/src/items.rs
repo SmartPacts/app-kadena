@@ -145,8 +145,10 @@ pub enum ItemsError {
     DataTooLarge,
     TooManyItems,
     Error,
-    /// Refused as "Unexpected characters" (V15 integer gas fields, V21).
+    /// Refused as "Unexpected characters" (V15 integer gas fields, V21, F-1).
     UnexpectedCharacters,
+    /// Refused as "Invalid meta field" (F-4: `meta` without `sender`).
+    InvalidMetaField,
 }
 
 /// The crypto the item renderers need.
@@ -170,6 +172,28 @@ type IResult = Result<(), ItemsError>;
 
 fn pe(r: Result<(), ParserError>) -> IResult {
     r.map_err(|_| ItemsError::Error)
+}
+
+/// F-1 for the values the review shows as text that Pact reads as a string (From,
+/// To, To Chain, Paying account, On Chain, On Network, expert mode's Pact ID): a
+/// JSON string, without escapes. The screen shows the raw bytes, so a JSON escape
+/// (any backslash) would not read as the node decodes it (V18 refuses one in a
+/// key), and an object or a number there would be shown as its raw JSON.
+fn shown_unescaped(json: &Json, tok: u16) -> IResult {
+    if json.tok(tok).kind != TokType::String || json.span(tok).contains(&b'\\') {
+        return Err(ItemsError::UnexpectedCharacters);
+    }
+    Ok(())
+}
+
+/// F-1 for the arguments of a transfer the review shows, at `positions`.
+fn args_unescaped(json: &Json, args: u16, positions: &[u16]) -> IResult {
+    for &pos in positions {
+        let mut t = 0u16;
+        pe(json.array_get_nth_element(args, pos, &mut t))?;
+        shown_unescaped(json, t)?;
+    }
+    Ok(())
 }
 
 /// A small bounded writer over the render buffer.
@@ -228,13 +252,18 @@ const META_KEYWORDS: [&[u8]; 6] = [
 /// each at most once, and no other key. The presence rule is the one the fixed
 /// order implied: a key is accepted only with every key before it in
 /// [`META_KEYWORDS`], so any set of keys gives the outcome its canonical order
-/// gave (a reviewed transaction carries creationTime, ttl, gasLimit, chainId and
-/// gasPrice; sender is optional).
+/// gave. A `meta` object without `sender` never reaches this check: it is
+/// refused first (F-4, [`ItemArray::store_tx_items`]), so a recognised `meta`
+/// carries all six keys.
 pub fn validate_meta_field(json: &Json) -> Result<(), ParserError> {
     let mut meta = 0u16;
     json.object_get_value(0, b"meta", &mut meta)?;
     if json.is_null(meta) {
         return Err(ParserError::NoData);
+    }
+    // The element lookups walk any container pairwise: only an object is a meta.
+    if json.tok(meta).kind != TokType::Object {
+        return Err(ParserError::InvalidMetaField);
     }
     let mut count = 0u16;
     json.object_get_element_count(meta, &mut count)?;
@@ -265,9 +294,12 @@ pub fn validate_meta_field(json: &Json) -> Result<(), ParserError> {
 }
 
 /// `parser_getTxName` (parser_impl.c:206-236).
+/// Only an object is a capability (the lookups walk any container pairwise).
 pub fn get_tx_name(json: &Json, cap: u16) -> ParserError {
     let mut idx = cap;
-    if json.object_get_value(cap, b"name", &mut idx).is_ok() {
+    if json.tok(cap).kind == TokType::Object
+        && json.object_get_value(cap, b"name", &mut idx).is_ok()
+    {
         let name = json.span(idx);
         if json.tok(idx).is_empty() {
             return ParserError::NoData;
@@ -448,14 +480,20 @@ fn check_integer_meta(json: &Json, meta: u16) -> IResult {
     for field in [&b"creationTime"[..], &b"ttl"[..], &b"gasLimit"[..]] {
         let mut v = 0u16;
         if json.object_get_value(meta, field, &mut v).is_ok() {
-            let text = json.span(v);
-            if json.tok(v).kind != TokType::Primitive
-                || text.is_empty()
-                || !text.iter().all(u8::is_ascii_digit)
-            {
-                return Err(ItemsError::UnexpectedCharacters);
-            }
+            plain_integer(json, v)?;
         }
+    }
+    Ok(())
+}
+
+/// A non-negative integer written as plain digits (a JSON number primitive).
+fn plain_integer(json: &Json, tok: u16) -> IResult {
+    let text = json.span(tok);
+    if json.tok(tok).kind != TokType::Primitive
+        || text.is_empty()
+        || !text.iter().all(u8::is_ascii_digit)
+    {
+        return Err(ItemsError::UnexpectedCharacters);
     }
     Ok(())
 }
@@ -558,6 +596,23 @@ impl ItemArray {
         self.store_key()?;
         self.validate_signers(json)?;
         self.store_all_transfers(json)?;
+        // F-4: pact-5 requires `meta.sender` (`PublicMeta` FromJSON, `.:`), and
+        // the review shows it as the paying account (V15): a `meta` without it is
+        // refused, and so is a `meta` that is not an object (the element lookups
+        // would read a flat array of keys and values like the object). A `null`
+        // or missing `meta` keeps the CAUTION below; the string "null" is a string
+        // (`is_null` also matches it, so the primitive is checked here).
+        let mut meta = 0u16;
+        if json.object_get_value(0, b"meta", &mut meta).is_ok()
+            && !(json.is_null(meta) && json.tok(meta).kind == TokType::Primitive)
+        {
+            let mut sender = 0u16;
+            if json.tok(meta).kind != TokType::Object
+                || json.object_get_value(meta, b"sender", &mut sender).is_err()
+            {
+                return Err(ItemsError::InvalidMetaField);
+            }
+        }
         if validate_meta_field(json).is_err() {
             self.push(Key::Caution, Render::Caution)?;
         } else {
@@ -583,6 +638,7 @@ impl ItemArray {
         self.push(Key::MaxFee, Render::MaxFee)?;
         let mut sender = 0u16;
         if json.object_get_value(meta, b"sender", &mut sender).is_ok() {
+            shown_unescaped(json, sender)?;
             let n = self.num as usize;
             self.items[n].token = sender;
             self.push(Key::PayingAccount, Render::Std)?;
@@ -604,6 +660,13 @@ impl ItemArray {
                 self.push(Key::Payload, Render::Cont)?;
                 for (key, field) in [(Key::PactId, &b"pactId"[..]), (Key::Step, &b"step"[..])] {
                     if json.object_get_value(cont, field, &mut v).is_ok() {
+                        // F-1: the Pact ID is a string, the step a
+                        // non-negative integer.
+                        if key == Key::PactId {
+                            shown_unescaped(json, v)?;
+                        } else {
+                            plain_integer(json, v)?;
+                        }
                         let n = self.num as usize;
                         self.items[n].token = v;
                         self.push(key, Render::Std)?;
@@ -646,6 +709,7 @@ impl ItemArray {
         let r = json.object_get_value(obj, b"networkId", &mut self.items[n].token);
         pe(r)?;
         if !json.is_null(self.items[n].token) {
+            shown_unescaped(json, self.items[n].token)?;
             self.push(Key::OnNetwork, Render::Std)?;
         }
         Ok(())
@@ -723,6 +787,12 @@ impl ItemArray {
                     .array_get_nth_element(clist, i, &mut token_index)
                     .is_ok()
                 {
+                    // Every capability is an object, as Pact reads it (a flat
+                    // array of keys and values would be read like one here); a
+                    // clist that is not an array has no object elements.
+                    if json.tok(token_index).kind != TokType::Object {
+                        return Err(ItemsError::UnexpectedCharacters);
+                    }
                     match get_tx_name(json, token_index) {
                         ParserError::NameTxTransfer => {
                             self.items[curr].token = token_index;
@@ -785,6 +855,7 @@ impl ItemArray {
         pe(json.array_get_element_count(args, &mut nargs))?;
         if nargs == 3 {
             let number = check_amount(json, args)?;
+            args_unescaped(json, args, &[0, 1])?;
             self.push(Key::Transfer, Render::Transfer)?;
             self.store_args_items(
                 json,
@@ -810,6 +881,7 @@ impl ItemArray {
         pe(json.array_get_element_count(args, &mut nargs))?;
         if nargs == 4 {
             let number = check_amount(json, args)?;
+            args_unescaped(json, args, &[0, 1, 3])?;
             self.push(Key::Transfer, Render::CrossTransfer)?;
             self.store_args_items(
                 json,
@@ -904,6 +976,7 @@ impl ItemArray {
             let meta = self.items[n].token;
             pe(json.object_get_value(meta, b"chainId", &mut self.items[n].token))?;
             if !json.is_null(self.items[n].token) {
+                shown_unescaped(json, self.items[n].token)?;
                 self.push(Key::OnChain, Render::Std)?;
             }
         }

@@ -3,7 +3,7 @@
 //! Every refusal branch has a test that fails if the branch is removed. Expected
 //! bytes come from the C app (v1.3.0) source, its Zemu suite (same inputs) and,
 //! for V1-V4, the emulator reproduction of the C defects (R3). `vN_*` names test
-//! intended divergence N (item N of the list in `docs/APDUSPEC.md`).
+//! intended divergence N (item N of the list in `docs/apdu.md`).
 
 mod common;
 use common::*;

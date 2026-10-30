@@ -3,7 +3,7 @@
 //! Every refusal branch has a test that fails if the branch is removed. Expected
 //! bytes come from the C app (v1.3.0) source, its Zemu suite (same inputs) and,
 //! for V1-V4, the emulator reproduction of the C defects (R3). `vN_*` names test
-//! intended divergence N (item N of the list in `docs/APDUSPEC.md`).
+//! intended divergence N (item N of the list in `docs/apdu.md`).
 
 mod common;
 use common::*;
@@ -320,8 +320,6 @@ fn meta_rules() {
     for meta in [
         r#"{"ttl":28800,"creationTime":0,"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s"}"#,
         r#"{"gasPrice":1.0e-6,"sender":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0}"#,
-        // sender is optional.
-        r#"{"chainId":"0","gasPrice":1.0e-6,"gasLimit":600,"ttl":28800,"creationTime":0}"#,
     ] {
         let items = items_of(base.replace(META, meta).as_bytes(), false).unwrap();
         assert!(items.contains(&("On Chain".into(), "0".into())), "{meta}");
@@ -333,9 +331,10 @@ fn meta_rules() {
     for meta in [
         r#"{"creationTime":0,"ttl":28800,"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s","x":1}"#,
         r#"{"gasPrice":1.0e-6,"sender":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0,"x":1}"#,
-        r#"{"gasPrice":1.0e-6,"payer":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0}"#,
+        r#"{"gasPrice":1.0e-6,"sender":"s","chainId":"0","ttl":28800,"payer":600,"creationTime":0}"#,
         r#"{"gasLimit":600,"chainId":"0","gasPrice":1.0e-6,"sender":"s"}"#,
-        r#"{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":0}"#,
+        r#"{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":0,"sender":"s"}"#,
+        r#"{"sender":"s"}"#,
         "null",
     ] {
         // V11: an unrecognised meta is blind signing.
@@ -353,16 +352,21 @@ fn meta_rules() {
     assert!(blind_items_of(j.as_bytes())
         .iter()
         .any(|(k, _)| k == "CAUTION"));
-    // The keys of a canonical prefix of fewer than 5 keys, in any order, are
-    // rejected (chainId / gasPrice read).
+    // F-4: a `meta` object without `sender` is refused, whatever else it holds
+    // (pact-5 requires it). Before 2.0.1 the five other keys were recognised and
+    // a canonical prefix of fewer was refused as "Unrecognized error code".
     for meta in [
+        r#"{"chainId":"0","gasPrice":1.0e-6,"gasLimit":600,"ttl":28800,"creationTime":0}"#,
         r#"{"creationTime":0,"ttl":1,"gasLimit":2,"chainId":"0"}"#,
         r#"{"chainId":"0","gasLimit":2,"ttl":1,"creationTime":0}"#,
         r#"{"ttl":1,"creationTime":0}"#,
         r#"{"creationTime":0}"#,
+        r#"{"gasPrice":1.0e-6,"payer":"s","chainId":"0","ttl":28800,"gasLimit":600,"creationTime":0}"#,
+        r#"{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":0}"#,
+        "{}",
     ] {
         let j = base.replace(META, meta);
-        assert_eq!(err_msg(&j), (msg(UNRECOGNIZED), 0x6984), "{meta}");
+        assert_eq!(err_msg(&j), (msg("Invalid meta field"), 0x6984), "{meta}");
     }
 }
 
@@ -999,4 +1003,78 @@ fn review_item_out_of_range() {
     assert!(app.review_item(&p, n - 1, &mut t, &mut v).is_ok());
     assert!(app.review_item(&p, n, &mut t, &mut v).is_err());
     assert!(app.review_item(&p, 99, &mut t, &mut v).is_err());
+}
+
+/// The fuzz target's device for the corpus replay below (`fuzz/fuzz_targets/review.rs`).
+struct FuzzDevice;
+
+impl kadena_core::items::ItemCrypto for FuzzDevice {
+    fn address(&self) -> Option<[u8; 32]> {
+        Some(hex::decode(EXPECTED_PK_HEX).unwrap().try_into().unwrap())
+    }
+}
+
+impl kadena_core::parser::ParseCrypto for FuzzDevice {
+    fn blake2b_256(&self, data: &[u8]) -> Option<[u8; 32]> {
+        Some(blake2b(data))
+    }
+}
+
+/// Runs one input as the fuzz target does; true when the device would show a
+/// review for it (with the expert setting OFF or ON).
+fn fuzz_review<const T: usize>(data: &[u8]) -> bool {
+    use kadena_core::items::{TxType, TITLE_BUF, VALUE_BUF};
+    let mut parsed: Box<kadena_core::parser::Parsed<T>> =
+        Box::new(kadena_core::parser::Parsed::new());
+    if parsed.read_json(data).is_err() {
+        return false;
+    }
+    let mut reviewed = false;
+    for expert in [false, true] {
+        if parsed
+            .store_items(&FuzzDevice, TxType::Json, data, None, expert)
+            .is_err()
+        {
+            break;
+        }
+        if parsed.validate(&FuzzDevice, data).is_err() {
+            continue;
+        }
+        reviewed = true;
+        let mut title = [0u8; TITLE_BUF];
+        let mut value = [0u8; VALUE_BUF];
+        for i in 0..parsed.num_items() {
+            let _ = parsed.item(&FuzzDevice, data, i, &mut title, &mut value);
+        }
+    }
+    reviewed
+}
+
+/// F-3 / F-8: `cargo fuzz` is not in the pinned image, so the fuzz seed corpus is
+/// replayed here through the fuzz target's steps, with both token caps: no input
+/// panics, and every input the device would review is a JSON document a strict
+/// decoder (serde_json, standing in for the node's aeson) accepts.
+#[test]
+fn f3_fuzz_corpus_replay() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz/seeds/review");
+    let mut inputs = 0;
+    let mut reviewed = 0;
+    let mut not_json = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let data = std::fs::read(&path).unwrap();
+        inputs += 1;
+        let _ = fuzz_review::<110>(&data);
+        if fuzz_review::<768>(&data) {
+            reviewed += 1;
+            if serde_json::from_slice::<serde_json::Value>(&data).is_err() {
+                not_json.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    eprintln!("corpus: {inputs} inputs, {reviewed} reviewed, reviewed but not JSON: {not_json:?}");
+    // A replay that read nothing proves nothing.
+    assert!(inputs >= 100, "{inputs} corpus files");
+    assert!(reviewed > 0);
+    assert!(not_json.is_empty(), "{not_json:?}");
 }

@@ -65,6 +65,7 @@ impl<const T: usize> Default for Parsed<T> {
 fn items_to_parser(r: Result<(), ItemsError>) -> Result<(), ParserError> {
     r.map_err(|e| match e {
         ItemsError::UnexpectedCharacters => ParserError::UnexpectedCharacters,
+        ItemsError::InvalidMetaField => ParserError::InvalidMetaField,
         _ => ParserError::UnexpectedError,
     })
 }
@@ -89,7 +90,7 @@ impl<const T: usize> Parsed<T> {
         }
     }
 
-    /// `_read_json_tx` → `json_parse`, plus divergences V4, V12 and V18.
+    /// `_read_json_tx` → `json_parse`, plus divergences V4, V12, V18 and F-3.
     pub fn read_json(&mut self, buf: &[u8]) -> Result<(), ParserError> {
         self.ntok = 0;
         self.json_len = buf.len();
@@ -98,7 +99,9 @@ impl<const T: usize> Parsed<T> {
         if buf.contains(&0) {
             return Err(ParserError::UnexpectedCharacters);
         }
-        let n = match jsmn::parse(buf, &mut self.tokens) {
+        // F-3: strict JSON up to the end of the top-level object, which must be
+        // an object (`Inval`: "Unexpected characters").
+        let n = match jsmn::parse_strict(buf, &mut self.tokens) {
             Err(JsmnError::NoMem) => return Err(ParserError::JsonTooManyTokens),
             Err(JsmnError::Inval) => return Err(ParserError::UnexpectedCharacters),
             Err(JsmnError::Part) => return Err(ParserError::JsonIncompleteJson),

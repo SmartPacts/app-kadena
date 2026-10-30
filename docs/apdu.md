@@ -533,14 +533,14 @@ required`, which 0x03 answers with its text as 0x04 does. The texts are:
 `Initialized empty context`, `Unexpected buffer end`, `Unexpected value`, `Unexpected unparsed bytes`,
 `Value out of range`, `Unexpected characters`, `NOMEM: JSON string contains too many tokens`,
 `Unexpected duplicated field`, `Blind signing mode required`, `Device key is not a signer`,
-`Device key signs more than once`, `Unrecognized error code`.
+`Device key signs more than once`, `Invalid meta field` (30), `Unrecognized error code`.
 
 A JSON transaction is limited to 15104 bytes and to 768 JSON tokens (110 on Nano X).
 
 ## Differences from the C implementation (v1.3.0)
 
 Version 2.0.0 is a Rust implementation that answers every command byte for byte like the C app v1.3.0,
-except for these intended changes:
+except for these intended changes (28 to 30 since 2.0.1):
 
 1. **Legacy 0x10:** an item whose length points past the bytes received in its APDU is refused with 0x6700.
    The C app could sign bytes left over from an earlier command in their place.
@@ -610,7 +610,7 @@ except for these intended changes:
     not show. The C app clear-signed it.
 15. **Fee and payer:** when `meta` is recognised, the review adds "Max fee" (`KDA` followed by gasLimit × gasPrice,
     computed exactly in decimal from the JSON numbers, exponents included, without rounding) and "Paying account"
-    (`meta.sender`, when present). `gasLimit`, `ttl` and `creationTime` must be plain digits (the node reads them
+    (`meta.sender`, which a `meta` object must carry, 30). `gasLimit`, `ttl` and `creationTime` must be plain digits (the node reads them
     as integers and would round a fraction), or the command is refused with `Unexpected characters` 0x6984; so
     "Max fee" is exactly the most the node charges. A gas price that is not a non-negative number, or a fee
     longer than a value can be (299 bytes), is refused like any value that cannot be displayed (`Unrecognized
@@ -625,7 +625,8 @@ except for these intended changes:
     (bare 0x6984 on 0x03). The device finds members by raw key bytes, while the node's decoder unescapes keys and
     keeps one of two duplicates, so an escaped `"name"`, `"signers"` or `"meta"`, or `coin.\u0052OTATE`, could
     hide a transfer, a rotation or a fee. Keys are checked in document order, each against the earlier keys of its
-    object (18, then 4). Escapes in values are allowed.
+    object (18, then 4). Escapes in values are allowed, except in the values the review shows as a transfer
+    or as the fee's (29).
 19. **Expert mode:** "Payload" shows `exec (code)` or `cont (continuation)`, and for a continuation "Pact ID" and
     "Step"; "Created (unix time)" and "TTL (seconds)" show `meta.creationTime` and `meta.ttl` as sent (the device
     has no clock).
@@ -677,14 +678,45 @@ except for these intended changes:
     for `amount:decimal`; otherwise `Unexpected characters` 0x6984 (bare on 0x10). The C app signed such a
     transfer, which then failed on chain.
 27. **`meta` keys in any order:** `meta` is recognised when its keys are `creationTime`, `ttl`, `gasLimit`,
-    `chainId`, `gasPrice` and optionally `sender`, in any order, each once, with no other key (any other key,
-    more than six keys, a key of 40 or more bytes, a `null` or missing `meta`: the CAUTION, as before). The
-    presence rule is the one the C app's fixed order implied: a key is accepted only with every key before it
-    in that list, so any set of keys gives the outcome its canonical order gives (the first one to four keys,
-    or none, in any order: `Unrecognized error code` 0x6984, bare on 0x03; any other incomplete set: the
-    CAUTION). For the C app v1.3.0 that refusal held for the canonical order only: the same keys in another
+    `chainId`, `gasPrice` and `sender`, in any order, each once, with no other key (any other key,
+    more than six keys, a key of 40 or more bytes, a `null` or missing `meta`: the CAUTION, as before). A
+    `meta` object without `sender` is refused first (30). The presence rule is the one the C app's fixed order
+    implied: a key is accepted only with every key before it in that list, so with `sender` present any
+    incomplete set gives the CAUTION. (2.0.0 accepted `meta` without `sender`, and refused the first one to
+    four keys with `Unrecognized error code`.) For the C app v1.3.0 that refusal held for the canonical order only: the same keys in another
     order were shown with the CAUTION and signed. Every `meta` value the
     review shows or checks is read by its name. The C app v1.3.0 accepted only that order and showed any
     other with the CAUTION; `@kadena/client` writes `gasLimit`, `gasPrice`, `sender`, `ttl`, `creationTime`,
     `chainId`, so with 11 its plain coin transfers would have needed blind signing. They are clear-signed.
     Each WARNING of 14, 16, 20 and 23 is one review item; the review holds at most 99 items, as in the C app.
+28. **Strict JSON structure (0x22, 0x03, and the structured-transfer template):** the document must follow
+    JSON's grammar up to the end of its top-level value, as the node's decoder (aeson) requires: the top-level
+    value is an object; every object key is a string; members and elements are separated by exactly one comma
+    (none missing, leading or trailing); a key is followed by a colon; a string holds no raw byte below 0x20
+    (a tab or newline must be escaped). Every capability of the device's signer entry must be an object (a
+    `clist` that is not an array has no object elements). Otherwise `Unexpected characters` 0x6984 (bare on
+    0x03). The device finds members by walking any container in key-value pairs, so a flat array such as
+    `["args",[…],"name","coin.TRANSFER"]` would be read like the object. The C app's tokenizer (jsmn,
+    non-strict) accepted all of these, and 2.0.0 reviewed, for one, a top-level array of alternating keys and
+    values as if it were the command object, and a capability written as such an array as a coin transfer.
+    Still accepted as before (the node refuses
+    such a document, so no signature over it can execute): a primitive that is not a JSON literal (`tru`,
+    `01`, `1.`), where the review does not check it (amounts and the integer `meta` fields are checked: 15,
+    24); bytes that are not valid UTF-8 inside a string (shown as `\xNN`, 13).
+29. **Shown transfer and fee values are plain strings:** argument 1 or 2 (sender, receiver) of a 3-argument
+    `coin.TRANSFER`, argument 1, 2 or 4 (sender, receiver, target chain) of a 4-argument
+    `coin.TRANSFER_XCHAIN`, `meta.sender` and `meta.chainId` (when `meta` is recognised), `networkId` (unless
+    `null`) and, with expert mode, a continuation's `pactId` must each be a JSON string without a backslash (a
+    JSON escape), and a continuation's `step` a non-negative integer written as plain digits; otherwise
+    `Unexpected characters` 0x6984 (bare on 0x03), whatever the settings. The screen shows the raw text
+    (`k:\u0030…`) while the node decodes it (`k:0…`), so the account the review names would not be the one the
+    node reads; and an object or a number there would be shown as raw JSON where Pact reads a string. The
+    amount already refuses escapes (24). Escapes elsewhere, including the arguments of a capability the review
+    cannot verify (20), are shown as sent.
+30. **`meta` is an object with `sender`:** a `meta` that is not an object (an array, a string, the string
+    `"null"` included, a number) or
+    an object without a `sender` key is refused with `Invalid meta field` 0x6984 (bare on 0x03), whatever else
+    it holds. Pact 5 requires `sender` (it reads every `meta` key as required), and the review shows it as the
+    paying account (15). The device's member lookups would read a flat array of keys and values like the
+    object (2.0.0 clear-signed a six-key one as a normal `meta`). A `null` or missing `meta` keeps the CAUTION
+    (11, 27).

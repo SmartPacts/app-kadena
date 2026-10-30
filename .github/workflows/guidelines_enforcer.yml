@@ -8,6 +8,11 @@ name: Ensure compliance with Ledger guidelines
 # More information on the guidelines can be found in the repository:
 # LedgerHQ/ledger-app-workflows/
 
+# Read-only by default; the job is raised to exactly what Ledger's reusable
+# workflow declares (contents read, actions write, pull-requests write).
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   push:
@@ -21,6 +26,10 @@ on:
 jobs:
   guidelines_enforcer:
     name: Call Ledger guidelines_enforcer
+    permissions:
+      contents: read
+      actions: write        # _get_app_manifest.yml and _check_*.yml
+      pull-requests: write  # requested by reusable_build.yml inside the enforcer
     # Ledger's reusable enforcer resolves the calling repository through the
     # public GitHub API, so in a private copy of this repository every run dies
     # with "caller_repository=... not found". It cannot succeed there at any

@@ -8,13 +8,13 @@ from kadena import ALT, EXPECTED_PK, STD, SW_OK, H, apdu, le, legacy_path
 def test_version_modern(kda):
     sw, data = kda.send(apdu(0x20))
     assert sw == SW_OK
-    # test mode 0, 2.0.0 as u16 BE, not locked, then the target id.
-    assert data[:8] == bytes.fromhex("0000020000000000")
+    # test mode 0, 2.0.1 as u16 BE, not locked, then the target id.
+    assert data[:8] == bytes.fromhex("0000020000000100")
     assert len(data) == 12
 
 
 def test_version_legacy(kda):
-    assert kda.send(apdu(0x00, data=b"\0")) == (SW_OK, bytes([2, 0, 0]))
+    assert kda.send(apdu(0x00, data=b"\0")) == (SW_OK, bytes([2, 0, 1]))
 
 
 def test_address_derivation_is_pinned(kda):
