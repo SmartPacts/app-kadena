@@ -18,7 +18,7 @@ on:
 jobs:
   misspell:
     name: Check misspellings
-    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_spell_check.yml@db5fd3d8e4fe724ccc4617709c9e245976ee8280
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_spell_check.yml@c4208d8d0ed80c262db61733d972002d8e6bbce3
     with:
       # Generated or binary data: screen snapshots, test vectors, fuzz seeds,
       # lock files and the differential report (hex responses).

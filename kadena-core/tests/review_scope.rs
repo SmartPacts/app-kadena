@@ -1411,7 +1411,7 @@ fn flat_transfer(from: &str) -> String {
 /// not an object, a key is not a string, a comma is missing, a string holds a
 /// raw byte below 0x20. Also refused: a trailing or leading comma, a missing
 /// colon. Not covered (a known gap, see the CHANGELOG): a primitive that is not
-/// a JSON literal (`tru`, `01`), which the tokenizer still reads as a value.
+/// a JSON literal (`trux`, `01`), which the tokenizer still reads as a value.
 #[test]
 fn f3_non_strict_json_is_refused() {
     let d = dev();

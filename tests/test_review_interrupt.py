@@ -105,7 +105,7 @@ def test_command_during_address_review_is_refused_and_the_address_is_unchanged(k
     try:
         with kda.pending(show):
             deadline = time.time() + 10
-            while not any("ddress" in t for t in kda.texts()):
+            while not any("address" in t.lower() for t in kda.texts()):
                 assert time.time() < deadline, kda.texts()
                 time.sleep(0.1)
             before = kda.texts()
@@ -127,3 +127,32 @@ def test_command_during_address_review_is_refused_and_the_address_is_unchanged(k
     while kda.send(apdu(0x20))[0] != SW_OK:
         assert time.time() < deadline
         time.sleep(0.2)
+
+
+def test_malformed_command_during_review_is_refused_like_any_other(kda):
+    """SDK 1.42: a malformed APDU (its length byte does not match its data) gets
+    the length error when nothing is in flight, but 0x6901 while a review is on
+    screen, like any other command then; the review signs unchanged."""
+    malformed = bytes.fromhex("0020000005aabb")  # Lc 5, 2 data bytes
+    assert kda.send(malformed) == (0x6E03, b"")
+    chunks = modern_chunks(0x22, SIMPLE_TRANSFER)
+    kda.send_all(chunks)
+    listener = ReplyListener(kda.backend._apdu_port)
+    try:
+        with kda.pending(chunks[-1]):
+            deadline = time.time() + 10
+            while "Review transaction" not in kda.texts():
+                assert time.time() < deadline, kda.texts()
+                time.sleep(0.1)
+            assert rest_apdu(kda, malformed) == REFUSED
+            assert "Review transaction" in kda.texts()
+            kda.approve_tx()
+        # The emulator handed the signing request the refusal.
+        assert kda.result() == (0x6901, b"")
+        sent = listener.replies(2, timeout=15)
+    finally:
+        listener.close()
+    assert sent[:1] == [REFUSED], [r.hex() for r in sent]
+    assert len(sent) == 2, [r.hex() for r in sent]
+    assert sent[1][-2:] == bytes.fromhex("9000")
+    verify(EXPECTED_PK, blake2b(SIMPLE_TRANSFER), sent[1][:64])

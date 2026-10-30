@@ -74,6 +74,9 @@ jobs:
 
   lint:
     name: Ledger lint
-    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_lint.yml@db5fd3d8e4fe724ccc4617709c9e245976ee8280
+    permissions:
+      contents: read
+      packages: read        # the app-builder image
+    uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_lint.yml@c4208d8d0ed80c262db61733d972002d8e6bbce3
     with:
       source: './src'

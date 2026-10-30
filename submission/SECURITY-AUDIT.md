@@ -1,6 +1,7 @@
 # Kadena Ledger app — security review (v2.0.0, Rust, API_LEVEL 26 and 27)
 
-v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.41.0), NBGL on all five
+v2.0.0 is a rewrite of the app in Rust on Ledger's Rust SDK (`ledger_device_sdk` =1.41.0; =1.42.2 from v2.0.1,
+see "SDK 1.42.2" below), NBGL on all five
 devices (Nano S+, Nano X, Stax, Flex, Apex P). This document describes v2.0.0 only; the C app (v1.3.x) is on the
 `c-v1.3` branch.
 
@@ -87,7 +88,7 @@ and to the public tree where one exists; the full history is available to an aud
 | F2 | High | A transfer amount in exponent notation (`1.0000000001e3`) was shown as sent, reading as about 1 KDA; the node takes 1000.0000001. | V21: refused ("Unexpected characters"). | host, emulator, differential, mutation |
 | F3 | Medium | V17's text said the capability's module can use the key; any code running while the capability is in scope can, including taking over accounts the key guards. | Covered by V20: no clear-signed capability of that kind remains; the docs say "any code the transaction runs". | host, emulator |
 | F4 | Low | `gasLimit` with a fraction: the node rounds it, so "Max fee" could understate the charge. | V15: `gasLimit`, `ttl` and `creationTime` must be plain digits ("Unexpected characters"). | host, emulator, differential, mutation |
-| F5 | Warning | A host can make the app write the transaction or template buffer to flash repeatedly without any user action (flash wear), as in v1.3.0. | Known limit, not changed: transactions over 8192 bytes and every structured-transfer template go to flash before the review. | — |
+| F5 | Warning | A host can make the app write the transaction or template buffer to flash repeatedly without any user action (flash wear), as in v1.3.0. | Narrowed in v2.0.1 (F-2): the transfer template now lives in RAM (`platform.rs`, `TEMPLATE_AT`), so only transactions over 8192 bytes reach flash before the review. That case stays a known limit. | host (`MAX_TRANSFER_BODY <= TEMPLATE_AT` is a compile-time assertion) |
 | F6 | Info | A scoped signature whose transfer does not name the key was titled "Unscoped Signer". | Titled "Key not in transfer"; "Unscoped Signer" only for an entry without capabilities. | host, emulator, differential, mutation |
 | F7 | Info | The review could not tell `exec` from `cont`; `verifiers` were ignored. | Expert mode shows "Payload" (`exec` or `cont`, with pact id and step); a `verifiers` field is refused ("Unexpected value", V22). | host, emulator, differential, mutation |
 | F8 | Info | An observation about Ledger's SDK, reported to Ledger separately. | Not changed. | — |
@@ -242,6 +243,43 @@ during a review, the heap measurement) were run with the release binaries unchan
 at API level 26 and on Nano S+ at API level 27, with the whole suite; the heap measurement on all five
 devices at both levels.
 
+### SDK 1.42.2 (v2.0.1)
+
+`ledger_device_sdk` 1.41.0 to 1.42.2 and `ledger_secure_sdk_sys` 1.17.0 to 1.18.0 (the enforcer requires the
+current crate). The four crates were read in full against the checksums in `Cargo.lock`. What changes for this
+app:
+
+- Unchanged files in the SDK: key derivation and signing (`ecc`), hashing, settings storage (`nvm.rs`), the
+  panic handler (`lib.rs`), the allocator, and the streaming review, address review, choice and status flows.
+- I/O (`io_new`): one APDU filter now applies whether a screen is shown or not. As before, while a command is
+  in flight only BOLOS GET_VERSION is answered inline and any other APDU gets 0x6901; outside a review, a
+  malformed APDU gets its length error (0x6E03). New: a malformed APDU while a review is shown gets 0x6901
+  too (1.41.0 answered the length error there). `tests/test_review_interrupt.py` pins both, and that the
+  review then signs exactly what it shows. The API the app uses (`next_command`, `into_comm`, `send`) is
+  unchanged; the removed calls (`try_next_event`, `DecodedEvent`, the deprecated home `show`) were never used.
+- Home screen: `show_and_return` draws from a copy the SDK keeps on the heap until the next draw, instead of
+  pointing NBGL into the app's builder. It costs heap (below).
+- New SDK features for an app-side USB stack and USB debug output (`app_io_stack`, `debug_over_usb`) are not
+  enabled: the release ELFs define only the OS IO stack's weak syscall stubs (`os_io_init`, `os_io_rx_evt`,
+  `os_io_tx_cmd`), as with 1.41.0, and no `G_io_seph_buffer`.
+- Heap: measured again on v2.0.1 (SDK 1.42.2, API level 27), largest review approved, no allocation failing:
+
+  | device | heap (bytes) | peak, printable (bytes) | peak, non-printable (bytes) | headroom, non-printable (bytes) |
+  |---|---|---|---|---|
+  | Nano S+ | 8192 | 4624 | 7260 | 932 |
+  | Nano X | 8192 | 4624 | 7260 | 932 |
+  | Stax | 8192 | 3492 | 3688 | 4504 |
+  | Flex | 8192 | 3492 | 3688 | 4504 |
+  | Apex P | 8192 | 3492 | 3688 | 4504 |
+
+  Against v2.0.0 (SDK 1.41.0, table under Heap below) the peaks rise by 260 bytes on Nano and 268 on the
+  touch devices, between two builds that differ by the SDK and by the 2.0.1 changes; the difference was not
+  split by cause. The Nano headroom with non-printable values is 932 bytes.
+
+Gates on this build: all five devices build with `--locked` in both pinned images; host tests (163); `cargo
+fmt` and `cargo clippy -D warnings`; ruff and mypy; the Ragger suite on all five devices at API level 27 (248
+passed and 2 skipped each, the heap measurement being the skipped one; no screen changed from its snapshot).
+
 ### Review of the C v1.3.1 patch, carried into v2.0.0
 
 | # | Severity | Issue (inherited from v1.3.0) | Fix | Evidence |
@@ -280,7 +318,8 @@ command) are listed in `docs/apdu.md`.
   every allocation that fails; `tests/test_heap_probe.py` reads both. Workload: the largest review the app
   accepts (`largest` in `tests/test_review_scope.py`: values at their display bounds, as many transfers as
   the token cap or the 15104-byte buffer allows), fully approved, with printable From/To and with every
-  From/To byte non-printable (shown as `\xNN`). Measured on this build (SDK 1.41.0), on all five devices at
+  From/To byte non-printable (shown as `\xNN`). Measured on v2.0.0 (SDK 1.41.0; for v2.0.1 see SDK 1.42.2
+  above), on all five devices at
   both API levels, with the same figures at 26 and 27 and no allocation failing:
 
   | device | heap (bytes) | peak, printable (bytes) | peak, non-printable (bytes) | headroom, non-printable (bytes) |
@@ -299,7 +338,7 @@ command) are listed in `docs/apdu.md`.
 - **Differential** (*differential*): 486 cases, 1603 APDUs per device, all five devices; every difference
   from v1.3.0 is one of V1-V26 or the version bytes (`tools/differential/report.md`). Run with the previous
   release ELFs (`71cf734`), after the first hardware run's display changes (H-1, H-2) and R7-1; not run again
-  for V27 and SDKs 1.38.0 and 1.41.0 (see above).
+  for V27 and SDKs 1.38.0, 1.41.0 and 1.42.2 (see above).
 - **Refusal tests check the whole reply** (*emulator*): every Ragger test of a refusal compares the status
   word and the response data together, so a refusal that has a message is checked word for word, and a bare
   one (legacy commands) is checked to carry none.
@@ -351,7 +390,7 @@ API level 27 (Nano S+ OS 1.7.0, Nano X 2.8.0, Stax 1.11.0, Flex 1.7.0, Apex P 1.
 
 Left as they are, with the reason in the finding's row:
 
-- Flash wear: a host can make the app write its buffers to flash without any user action (third review F5).
+- Flash wear: a host can make the app write a transaction over 8192 bytes to flash without any user action (third review F5; the template no longer goes there).
 - JSON escapes in shown values are displayed raw; an escaped receiver gets the V16 warning although it is a
   principal on chain (third review F10, fourth review R4-5). Both err toward showing more, not less.
 - `exec` or `cont` is shown only in expert mode. A missing `networkId` is refused; a `null` one, or the

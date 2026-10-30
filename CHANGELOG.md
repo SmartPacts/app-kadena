@@ -53,6 +53,19 @@ each of them fails on the v2.0.0 source (run against it before the fix).
   Evidence that the setting reaches the build: it changes the crate hash in the symbol names and adds 1176
   bytes of code on Nano S+ and 1056 on Nano X (API level 27, below).
 
+### Build
+
+- `ledger_device_sdk` 1.42.2 (`ledger_secure_sdk_sys` 1.18.0), the version Ledger's guidelines enforcer
+  requires (it reported 1.41.0 as outdated). The app's own code is unchanged by the bump. What the new SDK
+  changes for this app: one APDU filter for every state, so a malformed APDU sent while a review is on
+  screen is now answered 0x6901 like any other command during a review (1.41.0 answered the length error's
+  status word; `tests/test_review_interrupt.py` pins both answers); and the home screen is drawn from a copy
+  the SDK keeps on the heap, released at the next redraw. Heap peak of the largest review, measured again
+  (emulator, API level 27): Nano S+ and Nano X 7260 of 8192 bytes with non-printable values (932 free; 7000
+  in 2.0.0), Stax, Flex and Apex P 3688 (3420 in 2.0.0). A build with `--locked` gives the release files'
+  application hashes. Signing, key derivation, flash storage and the review screens are unchanged files in
+  the SDK.
+
 ### Flash
 
 - F-2 (in part) — the structured-transfer template (0x24, 0x10) is kept in the last 1280 bytes of the
@@ -84,7 +97,7 @@ each of them fails on the v2.0.0 source (run against it before the fix).
 ### Known, not changed
 
 - JSON a node rejects but the device still reviews (apdu.md rule 28): a primitive that is not a JSON literal
-  (`tru`, `01`, `1.`) where the review does not check it, and bytes that are not valid UTF-8 inside a string
+  (`trux`, `01`, `1.`) where the review does not check it, and bytes that are not valid UTF-8 inside a string
   (shown as `\xNN`). Amounts and the integer `meta` fields are checked (15, 24). Such a signature cannot
   execute. A structured transfer whose gas limit, creation time or ttl has a leading zero (the C Zemu vectors
   send `0123456789`) still builds a template the node rejects; refusing it would change the C vectors.

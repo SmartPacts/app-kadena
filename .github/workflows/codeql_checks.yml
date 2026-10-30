@@ -2,7 +2,7 @@ name: CodeQL
 
 # Static analysis of the Rust sources with GitHub CodeQL (Rust extractor, build
 # mode "none"). Ledger's reusable CodeQL workflow
-# (ledger-app-workflows/reusable_codeql_checks.yml at db5fd3d8e4fe724ccc4617709c9e245976ee8280)
+# (ledger-app-workflows/reusable_codeql_checks.yml at c4208d8d0ed80c262db61733d972002d8e6bbce3)
 # analyses C/C++ only (language "cpp", built with make and BOLOS_SDK), so it
 # cannot build this Rust app; github/codeql-action is called directly instead.
 #
@@ -34,6 +34,7 @@ jobs:
       contents: read
       security-events: write
       actions: read
+      packages: read        # the app-builder image
     steps:
       - name: Clone
         # actions/checkout v6 (tag resolved 2026-10-13)

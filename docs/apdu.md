@@ -700,7 +700,7 @@ except for these intended changes (28 to 30 since 2.0.1):
     non-strict) accepted all of these, and 2.0.0 reviewed, for one, a top-level array of alternating keys and
     values as if it were the command object, and a capability written as such an array as a coin transfer.
     Still accepted as before (the node refuses
-    such a document, so no signature over it can execute): a primitive that is not a JSON literal (`tru`,
+    such a document, so no signature over it can execute): a primitive that is not a JSON literal (`trux`,
     `01`, `1.`), where the review does not check it (amounts and the integer `meta` fields are checked: 15,
     24); bytes that are not valid UTF-8 inside a string (shown as `\xNN`, 13).
 29. **Shown transfer and fee values are plain strings:** argument 1 or 2 (sender, receiver) of a 3-argument
