@@ -155,8 +155,22 @@ docker run --rm -it -v "$(pwd):/app" -w /app $IMG bash
 
 SDK and API level: the pinned image builds with the C SDK v26.6.5 (API level 26), which is what the local
 tests, the differential and the release hashes in `submission/` use, and what a Nano S+ on OS 1.6.1 accepts.
-CI builds with Ledger's current `ledger-app-builder` image: since 2026-10-02 that is SDK v27.1.1, and the five
-ELFs it built for this branch report API level 27 in their `ledger.api_level` section.
+CI builds with Ledger's current `ledger-app-builder:latest` image, which is not pinned and moves with Ledger's C
+SDK (v27.1.1 on 2026-10-02, v27.1.5 on 2026-10-31); the five ELFs it builds report API level 27 in their
+`ledger.api_level` section.
+
+Release files are built from the tagged commit in the dev-tools image pinned by digest, one image per API level:
+
+```
+API 26: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:1f93ba59ee02576f336653c712276f006d4d81f4e355b023489bb7b5bdcf390d  (C SDK v26.6.5)
+API 27: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools@sha256:0ed357a6f66a1df949649803ea79e5a224f3f551a496adb3b73af22088781452  (C SDK v27.1.1)
+```
+
+`cargo ledger build <device>` from a fresh clone of the tag in that image reproduces the released ELF, hex and
+application hash byte for byte (v2.0.1: checked for the Nano S+ API-27 file on 2026-10-31). A build in Ledger's
+`ledger-app-builder:latest` is a valid app for the same API level but has a different hash whenever its C SDK
+differs from the pinned one, so CI artifacts are not the released bytes; the hashes to compare on the device are
+the ones in the release's `APP-HASHES.txt`.
 
 ## Layout
 
