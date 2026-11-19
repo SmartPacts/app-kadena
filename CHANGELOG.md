@@ -115,9 +115,12 @@ each of them fails on the v2.0.0 source (run against it before the fix).
   the device), version, key unchanged from 2.0.0, address review with two commands sent while it was on screen
   (both 0x6901, screen unchanged), one expired self-transfer signed and verified, three malformed transactions
   refused before any screen with Blind signing off. 2026-10-31.
-- The other three files (Nano S Plus 1.6.x, Nano Gen5 1.1.x and 1.2.x) are emulator-tested only: the full Ragger
-  suite at their API level on the release ELFs, every screen identical to the committed snapshots. No device of
-  those OS versions was at hand; the Gen5 run follows when one is.
+- Nano Gen5, OS 1.2.0 (API level 27), the `kadena-2.0.1-gen5-os1.2-api27.hex` file: the same checks, 2026-11-18.
+  The device had a new recovery phrase, so key compatibility was shown on it directly: the released 2.0.0 Gen5
+  file and 2.0.1 derive the same key at the same path.
+- The other two files (Nano S Plus 1.6.x, Nano Gen5 1.1.x) are emulator-tested only: the full Ragger suite at
+  their API level on the release ELFs, every screen identical to the committed snapshots. No device of those OS
+  versions was at hand.
 
 ## [2.0.0] — 2026-10-07
 
