@@ -118,9 +118,11 @@ each of them fails on the v2.0.0 source (run against it before the fix).
 - Nano Gen5, OS 1.2.0 (API level 27), the `kadena-2.0.1-gen5-os1.2-api27.hex` file: the same checks, 2026-11-18.
   The device had a new recovery phrase, so key compatibility was shown on it directly: the released 2.0.0 Gen5
   file and 2.0.1 derive the same key at the same path.
-- The other two files (Nano S Plus 1.6.x, Nano Gen5 1.1.x) are emulator-tested only: the full Ragger suite at
-  their API level on the release ELFs, every screen identical to the committed snapshots. No device of those OS
-  versions was at hand.
+- Nano S Plus, OS 1.6.1 (API level 26), the `kadena-2.0.1-nanosplus-os1.6-api26.hex` file: the same checks,
+  2026-11-19, on a device that ran the C app v1.3.3 before. The key at the same path is identical under the C app
+  v1.3.3 and 2.0.1. The C app v1.3.3 was reinstalled afterwards.
+- The Nano Gen5 1.1.x file is emulator-tested only: the full Ragger suite at API level 26 on the release ELF,
+  every screen identical to the committed snapshots. No Nano Gen5 on OS 1.1.x was at hand.
 
 ## [2.0.0] — 2026-10-07
 
